@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
 
 
 class BaseStrategy(ABC):
-    """Abstract base class for all trading strategies."""
+    """Abstract base class for all signal strategies."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Human-readable strategy name."""
 
     @abstractmethod
-    def generate_signal(self, market_state: Dict[str, Any]) -> int:
+    def compute_signal(self, price_history: list[float]) -> int:
         """Return 1 for BUY, -1 for SELL, and 0 for HOLD."""
+
+    @abstractmethod
+    def required_bars(self) -> int:
+        """Return the minimum price history length required by the strategy."""

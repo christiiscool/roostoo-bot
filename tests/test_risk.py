@@ -1,7 +1,73 @@
+from unittest.mock import patch
+
 from src.risk.manager import RiskManager
 
 
-def test_risk_manager_placeholder_exists() -> None:
-    manager = RiskManager()
+def test_drawdown_halts_trading_at_threshold() -> None:
+    manager = RiskManager(max_drawdown=0.15)
+    high_wallet = {"USD": {"Free": 1000, "Lock": 0}}
+    low_wallet = {"USD": {"Free": 850, "Lock": 0}}
+    prices = {"BTC/USD": 50000}
 
-    assert manager is not None
+    manager.drawdown(high_wallet, prices)
+    approved, quantity = manager.approve_trade("BTC/USD", 1, low_wallet, prices)
+
+    assert approved is False
+    assert quantity == 0.0
+
+
+def test_cooldown_prevents_rapid_retrading() -> None:
+    manager = RiskManager(cooldown_seconds=300)
+    wallet = {"USD": {"Free": 1000, "Lock": 0}}
+    prices = {"BTC/USD": 50000}
+
+    with patch("src.risk.manager.time.time", return_value=1000.0):
+        manager.update_after_trade("BTC/USD")
+    with patch("src.risk.manager.time.time", return_value=1100.0):
+        approved, quantity = manager.approve_trade("BTC/USD", 1, wallet, prices)
+
+    assert approved is False
+    assert quantity == 0.0
+
+
+def test_position_sizing_is_correct_for_buy_and_sell() -> None:
+    manager = RiskManager(max_position_pct=0.20)
+    buy_wallet = {"USD": {"Free": 1000, "Lock": 0}}
+    sell_wallet = {
+        "USD": {"Free": 100, "Lock": 0},
+        "BTC": {"Free": 2.0, "Lock": 0},
+    }
+    prices = {"BTC/USD": 50000}
+
+    approved_buy, buy_qty = manager.approve_trade("BTC/USD", 1, buy_wallet, prices)
+    approved_sell, sell_qty = manager.approve_trade("BTC/USD", -1, sell_wallet, prices)
+
+    assert approved_buy is True
+    assert buy_qty == 0.004
+    assert approved_sell is True
+    assert sell_qty == 1.6
+
+
+def test_mini_order_gate_rejects_tiny_orders() -> None:
+    manager = RiskManager(max_position_pct=0.20)
+    wallet = {"USD": {"Free": 4, "Lock": 0}}
+    prices = {"BTC/USD": 50000}
+
+    approved, quantity = manager.approve_trade("BTC/USD", 1, wallet, prices)
+
+    assert approved is False
+    assert quantity == 0.0
+
+
+def test_portfolio_value_sums_all_assets() -> None:
+    manager = RiskManager()
+    wallet = {
+        "USD": {"Free": 1000, "Lock": 100},
+        "BTC": {"Free": 0.1, "Lock": 0.05},
+        "ETH": {"Free": 1.0, "Lock": 0.5},
+    }
+    prices = {"BTC/USD": 50000, "ETH/USD": 2500}
+
+    value = manager.portfolio_value(wallet, prices)
+
+    assert value == 1100 + (0.15 * 50000) + (1.5 * 2500)
