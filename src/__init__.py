@@ -1,0 +1,1 @@
+"""Roostoo trading bot package."""
