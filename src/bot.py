@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import requests
 import schedule
 from dotenv import load_dotenv
 
@@ -62,6 +63,7 @@ class TradingBot:
         self.strategies = [MomentumStrategy(), MeanReversionStrategy()]
         self.strategy_weights = {"momentum": 0.6, "mean_reversion": 0.4}
         self.price_history: dict[str, list[float]] = {}
+        self.warmup_price_history()
         self.history_window = 50
         self.trade_pairs = self._load_trade_pairs()
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
@@ -81,6 +83,33 @@ class TradingBot:
         self.initial_portfolio_value = 0.0
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
+
+    def warmup_price_history(self) -> None:
+        """Pre-load last 50 candles from Binance public API on startup."""
+        binance_map = {
+            "BTC/USD": "BTCUSDT",
+            "ETH/USD": "ETHUSDT",
+            "BNB/USD": "BNBUSDT",
+            "SOL/USD": "SOLUSDT",
+        }
+
+        for pair, symbol in binance_map.items():
+            try:
+                response = requests.get(
+                    "https://api.binance.com/api/v3/klines",
+                    params={"symbol": symbol, "interval": "1m", "limit": 50},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                candles = response.json()
+                closes = [float(candle[4]) for candle in candles]
+                if closes:
+                    self.price_history[pair] = closes[-50:]
+                    print(f"[WARMUP] {pair}: loaded {len(closes)} bars, last price: {closes[-1]}")
+            except Exception as exc:
+                print(f"[WARMUP] Failed for {pair}: {exc}")
+
+        print("Warmup complete. Price history loaded. Bot ready to trade immediately.")
 
     def tick(self) -> None:
         """Run one full trading cycle."""
