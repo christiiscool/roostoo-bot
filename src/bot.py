@@ -20,7 +20,7 @@ from src.strategy import MeanReversionStrategy, MomentumStrategy, aggregate_sign
 
 
 def _configure_logging() -> logging.Logger:
-    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level_name = os.getenv("LOG_LEVEL", "DEBUG").upper()
     log_file = os.getenv("LOG_FILE", "bot.log")
     logger_name = "roostoo.bot"
     logger = logging.getLogger(logger_name)
@@ -66,6 +66,8 @@ class TradingBot:
         self.warmup_price_history()
         self.history_window = 50
         self.trade_pairs = self._load_trade_pairs()
+        self.pairs = self.trade_pairs
+        logger.info("Loaded trade pairs: %s", self.trade_pairs)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
         self.base_signal_threshold = 0.3
@@ -140,8 +142,9 @@ class TradingBot:
         wallet = self._current_wallet()
         required_bars = max(strategy.required_bars() for strategy in self.strategies)
         signal_threshold = self._current_signal_threshold()
+        logger.info("Processing %s pairs: %s", len(self.pairs), self.pairs)
 
-        for pair in self.trade_pairs:
+        for pair in self.pairs:
             ticker_entry = self._ticker_entry(pair, ticker_payload, tickers)
             if ticker_entry is None or ticker_entry.get("LastPrice") is None:
                 logger.warning("Ticker missing LastPrice for %s.", pair)
@@ -165,6 +168,7 @@ class TradingBot:
                 strategy.name: strategy.compute_signal(history)
                 for strategy in self.strategies
             }
+            weighted_signal_value = self._weighted_signal_value(strategy_signals)
             final_signal = aggregate_signals(
                 strategy_signals,
                 self.strategy_weights,
@@ -229,6 +233,16 @@ class TradingBot:
                         if self.dry_run:
                             self.trades_executed += 1
                         wallet = self._current_wallet()
+
+            logger.debug(
+                "%s: signal=%.3f threshold=%.3f approved=%s strategy_signals=%s final_signal=%s",
+                pair,
+                weighted_signal_value,
+                signal_threshold,
+                approved,
+                strategy_signals,
+                final_signal,
+            )
 
             portfolio_summary = self.risk.summary()
             logger.info(
@@ -367,8 +381,13 @@ class TradingBot:
         return wallet
 
     def _load_trade_pairs(self) -> list[str]:
-        trade_pairs = os.getenv("TRADE_PAIRS", "")
-        return [pair.strip() for pair in trade_pairs.split(",") if pair.strip()]
+        pairs_str = os.getenv("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD").strip()
+        if not pairs_str:
+            pairs_str = "BTC/USD,ETH/USD,BNB/USD,SOL/USD"
+        return [pair.strip() for pair in pairs_str.split(",") if pair.strip()]
+
+    def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
+        return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
 
     def _current_signal_threshold(self) -> float:
         if self.daily_tick_count >= 20 and self.daily_trade_count < 3:
