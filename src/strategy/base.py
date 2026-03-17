@@ -14,8 +14,8 @@ class BaseStrategy(ABC):
         """Human-readable strategy name."""
 
     @abstractmethod
-    def compute_signal(self, price_history: list[float]) -> int:
-        """Return 1 for BUY, -1 for SELL, and 0 for HOLD."""
+    def compute_signal(self, price_history: list[float]) -> float:
+        """Return a directional score where positive is BUY and negative is SELL."""
 
     @abstractmethod
     def required_bars(self) -> int:

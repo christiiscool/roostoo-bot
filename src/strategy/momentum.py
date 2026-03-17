@@ -41,20 +41,25 @@ class MomentumStrategy(BaseStrategy):
         rsi = 100 - (100 / (1 + relative_strength))
         return rsi.fillna(100)
 
-    def compute_signal(self, price_history: list[float]) -> int:
+    def compute_signal(self, price_history: list[float]) -> float:
         if len(price_history) < self.required_bars():
             return 0
 
         prices = pd.Series(price_history, dtype="float64")
         ema_fast = prices.ewm(span=self.fast_ema, adjust=False).mean()
         ema_slow = prices.ewm(span=self.slow_ema, adjust=False).mean()
+        ema_50 = prices.ewm(span=50, adjust=False).mean()
         rsi = self._compute_rsi(prices)
 
         fast_value = float(ema_fast.iloc[-1])
         slow_value = float(ema_slow.iloc[-1])
+        ema_50_value = float(ema_50.iloc[-1])
+        last_price = float(prices.iloc[-1])
         rsi_value = float(rsi.iloc[-1])
 
-        if fast_value > slow_value and rsi_value < self.rsi_overbought:
+        if fast_value > slow_value and rsi_value < self.rsi_overbought and (
+            last_price > ema_50_value or rsi_value < 40
+        ):
             return 1
         if fast_value < slow_value and rsi_value > self.rsi_oversold:
             return -1

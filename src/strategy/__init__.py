@@ -8,7 +8,7 @@ from src.strategy.momentum import MomentumStrategy
 
 
 def aggregate_signals(
-    signals: dict[str, int],
+    signals: dict[str, float],
     weights: dict[str, float],
     threshold: float = 0.3,
 ) -> int:

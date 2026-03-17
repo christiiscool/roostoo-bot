@@ -48,17 +48,18 @@ def _configure_logging() -> logging.Logger:
     logger.propagate = False
     return logger
 
-
-load_dotenv()
-logger = _configure_logging()
 DEFAULT_PAIRS = ["BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD"]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
+logger = _configure_logging()
 
 
 class TradingBot:
     """Coordinates data collection, signal generation, risk checks, and execution."""
 
     def __init__(self) -> None:
-        load_dotenv()
+        load_dotenv(dotenv_path=ENV_PATH)
         self.client = RoostooClient()
         self.risk = RiskManager()
         self.strategies = [MomentumStrategy(), MeanReversionStrategy()]
@@ -73,7 +74,7 @@ class TradingBot:
         logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
-        self.base_signal_threshold = 0.3
+        self.base_signal_threshold = 0.2
         self.relaxed_signal_threshold = 0.15
         self.trades_executed = 0
         self.tick_count = 0
@@ -147,6 +148,8 @@ class TradingBot:
 
         self.latest_prices = tickers
         self._manage_pending_orders(tickers)
+        wallet = self._current_wallet()
+        self._force_initial_positions(wallet, tickers)
         wallet = self._current_wallet()
         required_bars = max(strategy.required_bars() for strategy in self.strategies)
         signal_threshold = self._current_signal_threshold()
@@ -250,6 +253,13 @@ class TradingBot:
                 approved,
                 strategy_signals,
                 final_signal,
+            )
+            logger.info(
+                "%s signal=%.3f threshold=%.3f approved=%s",
+                pair,
+                weighted_signal_value,
+                signal_threshold,
+                approved,
             )
 
             portfolio_summary = self.risk.summary()
@@ -390,6 +400,69 @@ class TradingBot:
 
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
+
+    def _force_initial_positions(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        if self.tick_count < 3:
+            return
+        if not self._is_all_cash(wallet):
+            return
+
+        for pair in ("BTC/USD", "ETH/USD"):
+            price = self._to_float(current_prices.get(pair))
+            free_usd = self._wallet_free_balance(wallet, "USD")
+            if price <= 0 or free_usd <= 0:
+                continue
+            quantity = round((free_usd * 0.02) / price, 6)
+            if quantity <= 0:
+                continue
+            limit_price = self._limit_price_for_signal("BUY", price)
+            if self.dry_run:
+                self._apply_simulated_fill(pair=pair, side="BUY", quantity=quantity, price=limit_price)
+                self.trades_executed += 1
+                self.daily_trade_count += 1
+                self.risk.update_after_trade(pair)
+                logger.info(
+                    "[DRY RUN] Force buy bootstrap: BUY %.6f %s LIMIT @ %.6f",
+                    quantity,
+                    pair,
+                    limit_price,
+                )
+            else:
+                order_response = self.client.place_order(
+                    pair=pair,
+                    side="BUY",
+                    quantity=f"{quantity:.6f}",
+                    price=f"{limit_price:.6f}",
+                    order_type="LIMIT",
+                )
+                if order_response is not None:
+                    self._register_limit_order(
+                        pair=pair,
+                        side="BUY",
+                        quantity=quantity,
+                        limit_price=limit_price,
+                        order_response=order_response,
+                    )
+                    self.risk.update_after_trade(pair)
+
+    def _is_all_cash(self, wallet: Mapping[str, Mapping[str, Any]]) -> bool:
+        usd_balance = self._wallet_free_balance(wallet, "USD")
+        coin_balances = sum(
+            self._to_float(balance.get("Free", 0.0))
+            for coin, balance in wallet.items()
+            if coin != "USD"
+        )
+        return usd_balance > 0 and coin_balances == 0
+
+    def _wallet_free_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
+        balances = wallet.get(coin, {})
+        if not isinstance(balances, Mapping):
+            return 0.0
+        return self._to_float(balances.get("Free", 0.0))
 
     def _current_signal_threshold(self) -> float:
         if self.daily_tick_count >= 20 and self.daily_trade_count < 3:

@@ -21,7 +21,7 @@ def test_mean_reversion_returns_buy_when_price_is_far_below_mean() -> None:
 
     signal = strategy.compute_signal(prices)
 
-    assert signal == 1
+    assert signal == 0.8
 
 
 def test_aggregate_signals_holds_on_weak_conflict() -> None:

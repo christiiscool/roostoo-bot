@@ -15,7 +15,7 @@ class MeanReversionStrategy(BaseStrategy):
         self,
         bb_period: int = 20,
         bb_std: float = 2.0,
-        zscore_entry: float = 2.0,
+        zscore_entry: float = 1.5,
         zscore_exit: float = 0.5,
     ) -> None:
         self.bb_period = bb_period
@@ -30,7 +30,7 @@ class MeanReversionStrategy(BaseStrategy):
     def required_bars(self) -> int:
         return self.bb_period + 10
 
-    def compute_signal(self, price_history: list[float]) -> int:
+    def compute_signal(self, price_history: list[float]) -> float:
         if len(price_history) < self.required_bars():
             return 0
 
@@ -50,7 +50,7 @@ class MeanReversionStrategy(BaseStrategy):
         z_score = float((last_price - mean_value) / std_value)
 
         if z_score < -self.zscore_entry and last_price <= lower_band.iloc[-1]:
-            return 1
+            return 0.8
         if z_score > self.zscore_entry and last_price >= upper_band.iloc[-1]:
             return -1
         if abs(z_score) < self.zscore_exit:
