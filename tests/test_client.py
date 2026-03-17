@@ -10,7 +10,8 @@ from src.api.client import RoostooClient
 def make_response(payload):
     response = Mock(spec=requests.Response)
     response.json.return_value = payload
-    response.raise_for_status.return_value = None
+    response.status_code = 200
+    response.text = str(payload)
     return response
 
 
@@ -150,6 +151,19 @@ def test_get_balance_falls_back_to_wallet_key(mock_get, mock_check_clock_skew) -
 @patch("src.api.client.requests.get")
 def test_returns_none_when_api_reports_unsuccessful_response(mock_get) -> None:
     mock_get.return_value = make_response({"Success": False, "Message": "bad request"})
+    client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
+
+    result = client.get_server_time()
+
+    assert result is None
+
+
+@patch("src.api.client.requests.get")
+def test_returns_none_on_non_200_http_status(mock_get) -> None:
+    response = make_response({"Success": True})
+    response.status_code = 451
+    response.text = "blocked"
+    mock_get.return_value = response
     client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
 
     result = client.get_server_time()

@@ -106,7 +106,9 @@ class TradingBot:
                     params={"symbol": symbol, "interval": "1m", "limit": 50},
                     timeout=10,
                 )
-                response.raise_for_status()
+                if response.status_code != 200:
+                    logger.error("HTTP %s: %s", response.status_code, response.text)
+                    continue
                 candles = response.json()
                 closes = [float(candle[4]) for candle in candles]
                 if closes:

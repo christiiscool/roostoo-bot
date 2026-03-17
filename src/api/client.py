@@ -86,6 +86,12 @@ class RoostooClient:
 
         return payload
 
+    def _handle_response(self, response: requests.Response) -> Optional[Dict[str, Any]]:
+        if response.status_code == 200:
+            return self._parse_json(response)
+        logger.error("HTTP %s: %s", response.status_code, response.text)
+        return None
+
     def _extract_server_time_ms(self, payload: Mapping[str, Any]) -> Optional[int]:
         candidates = (
             payload.get("ServerTime"),
@@ -154,8 +160,7 @@ class RoostooClient:
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            response.raise_for_status()
-            return self._parse_json(response)
+            return self._handle_response(response)
         except requests.RequestException:
             logger.exception("Roostoo request failed for %s %s", method.upper(), path)
             return None
