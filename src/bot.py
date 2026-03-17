@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -66,21 +66,27 @@ class TradingBot:
         self.trade_pairs = self._load_trade_pairs()
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
+        self.base_signal_threshold = 0.3
+        self.relaxed_signal_threshold = 0.15
         self.trades_executed = 0
         self.tick_count = 0
         self.last_signal_count = 0
         self.last_risk_evaluations = 0
         self.last_dry_run_orders = 0
+        self.daily_tick_count = 0
+        self.daily_trade_count = 0
+        self.current_day = datetime.now(timezone.utc).date()
         self.latest_wallet: dict[str, dict[str, Any]] = {}
         self.latest_prices: dict[str, float] = {}
-        self.initial_portfolio_value = 50000.0 if self.dry_run else 0.0
-        self.simulated_wallet: dict[str, dict[str, float]] = {
-            "USD": {"Free": self.initial_portfolio_value, "Lock": 0.0}
-        }
+        self.initial_portfolio_value = 0.0
+        self.simulated_wallet: dict[str, dict[str, float]] = {}
+        self.pending_limit_orders: dict[str, dict[str, Any]] = {}
 
     def tick(self) -> None:
         """Run one full trading cycle."""
+        self._reset_daily_state_if_needed()
         self.tick_count += 1
+        self.daily_tick_count += 1
         self.last_signal_count = 0
         self.last_risk_evaluations = 0
         self.last_dry_run_orders = 0
@@ -101,7 +107,10 @@ class TradingBot:
             return
 
         self.latest_prices = tickers
+        self._manage_pending_orders(tickers)
+        wallet = self._current_wallet()
         required_bars = max(strategy.required_bars() for strategy in self.strategies)
+        signal_threshold = self._current_signal_threshold()
 
         for pair in self.trade_pairs:
             ticker_entry = self._ticker_entry(pair, ticker_payload, tickers)
@@ -127,7 +136,11 @@ class TradingBot:
                 strategy.name: strategy.compute_signal(history)
                 for strategy in self.strategies
             }
-            final_signal = aggregate_signals(strategy_signals, self.strategy_weights)
+            final_signal = aggregate_signals(
+                strategy_signals,
+                self.strategy_weights,
+                threshold=signal_threshold,
+            )
             if final_signal != 0:
                 self.last_signal_count += 1
 
@@ -144,47 +157,59 @@ class TradingBot:
                 )
                 if approved:
                     side = "BUY" if final_signal == 1 else "SELL"
+                    limit_price = self._limit_price_for_signal(side, last_price)
                     if self.dry_run:
-                        self._apply_simulated_fill(pair=pair, side=side, quantity=quantity, price=last_price)
-                        logger.info("[DRY RUN] Would place: %s %.6f %s at market", side, quantity, pair)
+                        self._apply_simulated_fill(pair=pair, side=side, quantity=quantity, price=limit_price)
                         logger.info(
-                            "ORDER mode=DRY_RUN side=%s qty=%.6f pair=%s price=%.6f",
+                            "[DRY RUN] Would place: %s %.6f %s LIMIT @ %.6f",
                             side,
                             quantity,
                             pair,
-                            last_price,
+                            limit_price,
+                        )
+                        logger.info(
+                            "ORDER mode=DRY_RUN order_type=LIMIT side=%s qty=%.6f pair=%s price=%.6f",
+                            side,
+                            quantity,
+                            pair,
+                            limit_price,
                         )
                         self.last_dry_run_orders += 1
+                        self.daily_trade_count += 1
                     else:
                         order_response = self.client.place_order(
                             pair=pair,
                             side=side,
                             quantity=f"{quantity:.6f}",
+                            price=f"{limit_price:.6f}",
+                            order_type="LIMIT",
                         )
                         if order_response is None:
                             approved = False
                             quantity = 0.0
                         else:
-                            logger.info(
-                                "ORDER mode=LIVE side=%s qty=%.6f pair=%s price=%.6f",
-                                side,
-                                quantity,
-                                pair,
-                                last_price,
+                            self._register_limit_order(
+                                pair=pair,
+                                side=side,
+                                quantity=quantity,
+                                limit_price=limit_price,
+                                order_response=order_response,
                             )
                     if approved:
                         self.risk.update_after_trade(pair)
-                        self.trades_executed += 1
+                        if self.dry_run:
+                            self.trades_executed += 1
                         wallet = self._current_wallet()
 
             portfolio_summary = self.risk.summary()
             logger.info(
-                "tick=%s pair=%s signal=%s approved=%s qty=%.6f summary=%s",
+                "tick=%s pair=%s signal=%s approved=%s qty=%.6f threshold=%.2f summary=%s",
                 datetime.now(timezone.utc).isoformat(),
                 pair,
                 final_signal,
                 approved,
                 quantity,
+                signal_threshold,
                 portfolio_summary,
             )
 
@@ -232,6 +257,8 @@ class TradingBot:
         pending_orders = 0
 
         if self.dry_run and not has_live_credentials:
+            if not self.simulated_wallet:
+                self._ensure_simulated_wallet(tickers)
             balance_ok = True
             balance_value = self.risk.portfolio_value(self.simulated_wallet, tickers)
         else:
@@ -278,6 +305,7 @@ class TradingBot:
         )
 
     def _apply_simulated_fill(self, pair: str, side: str, quantity: float, price: float) -> None:
+        self._ensure_simulated_wallet(self.latest_prices)
         base_coin = pair.split("/")[0]
         usd_wallet = self.simulated_wallet.setdefault("USD", {"Free": 0.0, "Lock": 0.0})
         coin_wallet = self.simulated_wallet.setdefault(base_coin, {"Free": 0.0, "Lock": 0.0})
@@ -297,6 +325,7 @@ class TradingBot:
 
     def _current_wallet(self) -> dict[str, dict[str, Any]]:
         if self.dry_run:
+            self._ensure_simulated_wallet(self.latest_prices)
             self.latest_wallet = {
                 coin: {"Free": balances["Free"], "Lock": balances.get("Lock", 0.0)}
                 for coin, balances in self.simulated_wallet.items()
@@ -311,6 +340,181 @@ class TradingBot:
     def _load_trade_pairs(self) -> list[str]:
         trade_pairs = os.getenv("TRADE_PAIRS", "")
         return [pair.strip() for pair in trade_pairs.split(",") if pair.strip()]
+
+    def _current_signal_threshold(self) -> float:
+        if self.daily_tick_count >= 20 and self.daily_trade_count < 3:
+            logger.info(
+                "Relaxing signal threshold to %.2f after %s ticks with %s trades today.",
+                self.relaxed_signal_threshold,
+                self.daily_tick_count,
+                self.daily_trade_count,
+            )
+            return self.relaxed_signal_threshold
+        return self.base_signal_threshold
+
+    def _reset_daily_state_if_needed(self) -> None:
+        today = datetime.now(timezone.utc).date()
+        if today == self.current_day:
+            return
+        self.current_day = today
+        self.daily_tick_count = 0
+        self.daily_trade_count = 0
+
+    def _ensure_simulated_wallet(self, current_prices: Mapping[str, Any]) -> None:
+        if self.simulated_wallet:
+            return
+
+        exchange_info = self.client.get_exchange_info()
+        initial_wallet = exchange_info.get("InitialWallet") if isinstance(exchange_info, Mapping) else None
+        if initial_wallet is None and isinstance(exchange_info, Mapping):
+            data = exchange_info.get("Data")
+            if isinstance(data, Mapping):
+                initial_wallet = data.get("InitialWallet")
+
+        if isinstance(initial_wallet, Mapping):
+            normalized_wallet: dict[str, dict[str, float]] = {}
+            for coin, balance in initial_wallet.items():
+                if isinstance(balance, Mapping):
+                    normalized_wallet[str(coin)] = {
+                        "Free": self._to_float(balance.get("Free", 0.0)),
+                        "Lock": self._to_float(balance.get("Lock", 0.0)),
+                    }
+                else:
+                    normalized_wallet[str(coin)] = {"Free": self._to_float(balance), "Lock": 0.0}
+            self.simulated_wallet = normalized_wallet
+        else:
+            self.simulated_wallet = {"USD": {"Free": 0.0, "Lock": 0.0}}
+
+        self.initial_portfolio_value = self.risk.portfolio_value(self.simulated_wallet, current_prices)
+
+    def _limit_price_for_signal(self, side: str, last_price: float) -> float:
+        if side == "BUY":
+            return round(last_price * 0.9995, 6)
+        return round(last_price * 1.0005, 6)
+
+    def _register_limit_order(
+        self,
+        pair: str,
+        side: str,
+        quantity: float,
+        limit_price: float,
+        order_response: Mapping[str, Any],
+    ) -> None:
+        order_id = self._extract_order_id(order_response)
+        status = self._extract_order_status(order_response)
+        logger.info(
+            "ORDER mode=LIVE order_type=LIMIT side=%s qty=%.6f pair=%s price=%.6f status=%s",
+            side,
+            quantity,
+            pair,
+            limit_price,
+            status or "UNKNOWN",
+        )
+
+        if status == "FILLED":
+            self.trades_executed += 1
+            self.daily_trade_count += 1
+            return
+
+        if order_id is None:
+            return
+
+        self.pending_limit_orders[order_id] = {
+            "pair": pair,
+            "side": side,
+            "quantity": quantity,
+            "limit_price": limit_price,
+            "submitted_tick": self.tick_count,
+            "submitted_at": time.time(),
+        }
+
+    def _manage_pending_orders(self, current_prices: Mapping[str, Any]) -> None:
+        if self.dry_run:
+            return
+        should_query = bool(self.pending_limit_orders) or (self.tick_count % 5 == 0)
+        if not should_query:
+            return
+
+        pending_payload = self.client.query_orders(pending_only=True)
+        pending_orders = self._extract_orders(pending_payload or {})
+        pending_lookup = {
+            str(order.get("OrderId") or order.get("order_id")): order
+            for order in pending_orders
+            if order.get("OrderId") or order.get("order_id")
+        }
+
+        for order_id, metadata in list(self.pending_limit_orders.items()):
+            if order_id not in pending_lookup:
+                self.trades_executed += 1
+                self.daily_trade_count += 1
+                self.pending_limit_orders.pop(order_id, None)
+                continue
+
+            age_seconds = time.time() - float(metadata["submitted_at"])
+            age_ticks = self.tick_count - int(metadata["submitted_tick"])
+
+            if age_seconds >= 600:
+                self.client.cancel_order(order_id=order_id)
+                self.pending_limit_orders.pop(order_id, None)
+                logger.info("Cancelled stale limit order %s after %.0f seconds.", order_id, age_seconds)
+                continue
+
+            if age_ticks >= 2:
+                pair = str(metadata["pair"])
+                side = str(metadata["side"])
+                quantity = float(metadata["quantity"])
+                self.client.cancel_order(order_id=order_id)
+                market_response = self.client.place_order(
+                    pair=pair,
+                    side=side,
+                    quantity=f"{quantity:.6f}",
+                    order_type="MARKET",
+                )
+                self.pending_limit_orders.pop(order_id, None)
+                if market_response is not None:
+                    self.trades_executed += 1
+                    self.daily_trade_count += 1
+                    logger.info(
+                        "ORDER mode=LIVE order_type=MARKET side=%s qty=%.6f pair=%s price=%.6f fallback_from=%s",
+                        side,
+                        quantity,
+                        pair,
+                        self._to_float(current_prices.get(pair)),
+                        order_id,
+                    )
+
+    def _extract_order_id(self, payload: Mapping[str, Any]) -> Optional[str]:
+        order_detail = payload.get("OrderDetail")
+        if isinstance(order_detail, Mapping):
+            order_id = order_detail.get("OrderId") or order_detail.get("order_id")
+            if order_id is not None:
+                return str(order_id)
+        order_id = payload.get("OrderId") or payload.get("order_id")
+        if order_id is not None:
+            return str(order_id)
+        data = payload.get("Data")
+        if isinstance(data, Mapping):
+            order_detail = data.get("OrderDetail")
+            if isinstance(order_detail, Mapping):
+                order_id = order_detail.get("OrderId") or order_detail.get("order_id")
+                if order_id is not None:
+                    return str(order_id)
+        return None
+
+    def _extract_order_status(self, payload: Mapping[str, Any]) -> str:
+        order_detail = payload.get("OrderDetail")
+        if isinstance(order_detail, Mapping):
+            status = order_detail.get("Status") or order_detail.get("status")
+            if status is not None:
+                return str(status).upper()
+        data = payload.get("Data")
+        if isinstance(data, Mapping):
+            order_detail = data.get("OrderDetail")
+            if isinstance(order_detail, Mapping):
+                status = order_detail.get("Status") or order_detail.get("status")
+                if status is not None:
+                    return str(status).upper()
+        return ""
 
     def _cancel_pending_orders(self) -> None:
         pending_payload = self.client.query_orders(pending_only=True)

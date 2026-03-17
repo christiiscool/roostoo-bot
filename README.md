@@ -2,19 +2,22 @@
 
 # Roostoo Bot
 
-Roostoo Bot is an open-source Python scaffold for the SG vs HK Web3 Quant Trading Hackathon, designed for rapid experimentation on the Roostoo mock exchange while keeping architecture, risk controls, and deployment workflows clean and reproducible for a university team.
+Roostoo Bot is Team155-alpha SMU's open-source entry for the SG vs HK Web3 Quant Trading Hackathon. The project is designed around disciplined, risk-adjusted execution on the Roostoo mock exchange, with a hybrid momentum plus mean-reversion signal stack, downside-aware risk controls, and infrastructure that is straightforward for judges to review ahead of March 28.
 
-## Quickstart
+## Competition
 
-```bash
-git clone <your-repo-url>
-cd roostoo-bot
-python -m venv venv
-venv\\Scripts\\activate
-pip install -r requirements.txt
-copy .env.example .env
-python -m src.bot
-```
+- Event: SG vs HK Web3 Quant Trading Hackathon
+- Team: Team155-alpha SMU
+- Exchange: Roostoo mock exchange
+- Objective: maximize risk-adjusted performance, with Sharpe, Sortino, and Calmar ratios prioritized over raw aggression
+
+## Strategy Summary
+
+The bot combines two complementary engines:
+
+- Momentum: EMA crossover with RSI gating to participate when trend strength is present without chasing the most overextended moves.
+- Mean Reversion: Bollinger-band and z-score logic to buy dislocations below fair value and sell stretched moves above the local mean.
+- Aggregation: weighted voting blends both strategies so the bot can stay selective in noisy conditions and become more active only when daily trade frequency needs support.
 
 ## Architecture
 
@@ -41,17 +44,36 @@ python -m src.bot
 +-------------------+
 ```
 
-## Strategy Summary
+## How To Run
 
-Strategy documentation will live in [STRATEGY.md](./STRATEGY.md). This placeholder will be replaced once the team finalizes signal design, parameter selection, and evaluation methodology.
+```bash
+git clone https://github.com/christiiscool/roostoo-bot.git
+cd roostoo-bot
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pip install -e .
+copy .env.example .env
+python -m src.bot
+```
 
-## Risk Management
+For a dry-run smoke test before deployment:
 
-Risk controls will be documented after the initial scaffold phase. Expected coverage includes position sizing, drawdown controls, cooldown logic, and execution safety checks.
+```bash
+python scripts/test_local.py
+```
 
 ## Deployment
 
-Deployment automation for AWS EC2 is provided in [scripts/deploy.sh](./scripts/deploy.sh). Use this script as the starting point for provisioning a remote runtime once the trading logic is ready.
+Deployment automation for AWS EC2 is provided in [scripts/deploy.sh](./scripts/deploy.sh). The script installs dependencies, validates credentials, runs a dry-run smoke test, and starts the bot in a detached `screen` session.
+
+## Professional Review Checklist
+
+- Open-source repository with clear structure and documentation
+- Hybrid strategy implementation aligned with hackathon judging criteria
+- Limit-first execution to reduce commission drag
+- Dynamic risk sizing from live wallet balances
+- Monitoring and deployment tooling for a production-style presentation
 
 ## License
 

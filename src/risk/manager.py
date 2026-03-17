@@ -39,7 +39,7 @@ class RiskManager:
         wallet: Mapping[str, Mapping[str, Any]],
         current_prices: Mapping[str, Any],
     ) -> tuple[bool, float]:
-        """Apply fail-fast portfolio gates and return approved quantity."""
+        """Apply fail-fast portfolio gates and size from the live wallet snapshot."""
         current_drawdown = self.drawdown(wallet, current_prices)
         if current_drawdown >= self.max_drawdown:
             logger.warning(
@@ -68,6 +68,9 @@ class RiskManager:
 
         if signal == 1:
             free_usd = self._free_balance(wallet, "USD")
+            if free_usd <= 0:
+                logger.info("Trade rejected for %s because live USD balance is empty.", pair)
+                return False, 0.0
             quantity = round((free_usd * self.max_position_pct) / last_price, 6)
         elif signal == -1:
             base_coin = pair.split("/")[0]
