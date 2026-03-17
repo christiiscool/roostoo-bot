@@ -3,15 +3,9 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from dotenv import load_dotenv
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from src.bot import TradingBot
 from src.strategy.mean_reversion import MeanReversionStrategy

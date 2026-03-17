@@ -8,6 +8,7 @@ import logging
 import os
 import time
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import urlencode
 
@@ -15,6 +16,8 @@ import requests
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
 
 
 class RoostooClient:
@@ -27,7 +30,7 @@ class RoostooClient:
         base_url: Optional[str] = None,
         timeout: int = 10,
     ) -> None:
-        load_dotenv()
+        load_dotenv(dotenv_path=ENV_PATH)
         self.api_key = api_key or os.getenv("API_KEY") or os.getenv("ROOSTOO_API_KEY", "")
         self.secret_key = secret_key or os.getenv("SECRET_KEY") or os.getenv("ROOSTOO_SECRET_KEY", "")
         self.base_url = (

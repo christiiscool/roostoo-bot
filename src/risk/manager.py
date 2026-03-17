@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
 
 
 class RiskManager:
@@ -22,7 +25,7 @@ class RiskManager:
         cooldown_seconds: Optional[int] = None,
         max_open_positions: int = 3,
     ) -> None:
-        load_dotenv()
+        load_dotenv(dotenv_path=ENV_PATH)
         self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.20))
         self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.15))
         self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 300))
