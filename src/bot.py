@@ -51,6 +51,7 @@ def _configure_logging() -> logging.Logger:
 
 load_dotenv()
 logger = _configure_logging()
+DEFAULT_PAIRS = ["BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD"]
 
 
 class TradingBot:
@@ -65,9 +66,11 @@ class TradingBot:
         self.price_history: dict[str, list[float]] = {}
         self.warmup_price_history()
         self.history_window = 50
-        self.trade_pairs = self._load_trade_pairs()
-        self.pairs = self.trade_pairs
-        logger.info("Loaded trade pairs: %s", self.trade_pairs)
+        pairs_raw = os.getenv("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD")
+        self.pairs = [p.strip() for p in pairs_raw.split(",") if p.strip()]
+        if not self.pairs:
+            self.pairs = DEFAULT_PAIRS.copy()
+        logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
         self.base_signal_threshold = 0.3
@@ -115,12 +118,17 @@ class TradingBot:
 
     def tick(self) -> None:
         """Run one full trading cycle."""
+        if not self.pairs:
+            logger.error("No pairs configured! Using defaults.")
+            self.pairs = DEFAULT_PAIRS.copy()
         self._reset_daily_state_if_needed()
         self.tick_count += 1
         self.daily_tick_count += 1
         self.last_signal_count = 0
         self.last_risk_evaluations = 0
         self.last_dry_run_orders = 0
+        if self.tick_count <= 3:
+            logger.info("Tick %s pairs: %s", self.tick_count, self.pairs)
 
         ticker_payload = self.client.get_ticker()
         if ticker_payload is None:
@@ -262,7 +270,7 @@ class TradingBot:
         """Start the bot loop and keep running on the configured schedule."""
         logger.info(
             "Starting trading loop for pairs: %s | mode=%s",
-            ", ".join(self.trade_pairs),
+            ", ".join(self.pairs),
             "DRY_RUN" if self.dry_run else "LIVE",
         )
         self.tick()
@@ -379,12 +387,6 @@ class TradingBot:
         wallet = self._extract_wallet(wallet_payload or {})
         self.latest_wallet = wallet
         return wallet
-
-    def _load_trade_pairs(self) -> list[str]:
-        pairs_str = os.getenv("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD").strip()
-        if not pairs_str:
-            pairs_str = "BTC/USD,ETH/USD,BNB/USD,SOL/USD"
-        return [pair.strip() for pair in pairs_str.split(",") if pair.strip()]
 
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
