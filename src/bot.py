@@ -568,16 +568,24 @@ class TradingBot:
         return None
 
     def _extract_wallet(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-        for key in ("Wallet", "Data", "Result"):
+        for key in ("SpotWallet", "Wallet", "Data", "Result"):
             block = payload.get(key)
             if isinstance(block, Mapping):
-                wallet_candidate = block.get("Wallet") if key != "Wallet" else block
+                wallet_candidate = block
+                if key in {"Data", "Result"}:
+                    wallet_candidate = block.get("SpotWallet") or block.get("Wallet") or block
                 if isinstance(wallet_candidate, Mapping):
                     return {
                         str(coin): dict(balance)
                         for coin, balance in wallet_candidate.items()
                         if isinstance(balance, Mapping)
                     }
+        if all(isinstance(balance, Mapping) for balance in payload.values()):
+            return {
+                str(coin): dict(balance)
+                for coin, balance in payload.items()
+                if isinstance(balance, Mapping)
+            }
         return {}
 
     def _extract_pending_orders(self, payload: Optional[Mapping[str, Any]]) -> int:

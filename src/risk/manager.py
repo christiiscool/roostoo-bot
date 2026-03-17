@@ -40,7 +40,8 @@ class RiskManager:
         current_prices: Mapping[str, Any],
     ) -> tuple[bool, float]:
         """Apply fail-fast portfolio gates and size from the live wallet snapshot."""
-        current_drawdown = self.drawdown(wallet, current_prices)
+        normalized_wallet = self._normalize_wallet(wallet)
+        current_drawdown = self.drawdown(normalized_wallet, current_prices)
         if current_drawdown >= self.max_drawdown:
             logger.warning(
                 "Trade rejected for %s due to drawdown threshold: drawdown=%.4f threshold=%.4f",
@@ -56,7 +57,7 @@ class RiskManager:
             logger.info("Trade rejected for %s due to cooldown.", pair)
             return False, 0.0
 
-        self.open_positions = self._count_open_positions(wallet)
+        self.open_positions = self._count_open_positions(normalized_wallet)
         if signal == 1 and self.open_positions >= self.max_open_positions:
             logger.info("Trade rejected for %s due to max open positions.", pair)
             return False, 0.0
@@ -67,14 +68,14 @@ class RiskManager:
             return False, 0.0
 
         if signal == 1:
-            free_usd = self._free_balance(wallet, "USD")
+            free_usd = self._free_balance(normalized_wallet, "USD")
             if free_usd <= 0:
                 logger.info("Trade rejected for %s because live USD balance is empty.", pair)
                 return False, 0.0
             quantity = round((free_usd * self.max_position_pct) / last_price, 6)
         elif signal == -1:
             base_coin = pair.split("/")[0]
-            quantity = round(self._free_balance(wallet, base_coin) * 0.80, 6)
+            quantity = round(self._free_balance(normalized_wallet, base_coin) * 0.80, 6)
         else:
             return False, 0.0
 
@@ -99,8 +100,9 @@ class RiskManager:
         current_prices: Mapping[str, Any],
     ) -> float:
         """Return the total USD value of free and locked balances."""
+        normalized_wallet = self._normalize_wallet(wallet)
         total_value = 0.0
-        for coin, balances in wallet.items():
+        for coin, balances in normalized_wallet.items():
             free_balance = self._to_float(balances.get("Free", 0.0))
             lock_balance = self._to_float(balances.get("Lock", 0.0))
             total_units = free_balance + lock_balance
@@ -160,6 +162,13 @@ class RiskManager:
     def _free_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
         balances = wallet.get(coin, {})
         return self._to_float(balances.get("Free", 0.0))
+
+    def _normalize_wallet(self, wallet: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
+        if "SpotWallet" in wallet and isinstance(wallet.get("SpotWallet"), Mapping):
+            return wallet["SpotWallet"]
+        if "Wallet" in wallet and isinstance(wallet.get("Wallet"), Mapping):
+            return wallet["Wallet"]
+        return wallet
 
     def _resolve_pair_price(self, pair: str, current_prices: Mapping[str, Any]) -> Optional[float]:
         value = current_prices.get(pair)

@@ -288,7 +288,14 @@ class RoostooClient:
 
     def get_balance(self) -> Optional[Dict[str, Any]]:
         """Fetch signed wallet balances."""
-        return self._request("GET", "/v3/balance", signed=True)
+        payload = self._request("GET", "/v3/balance", signed=True)
+        if payload is None:
+            return None
+        spot_wallet = payload.get("SpotWallet") or payload.get("Wallet", {})
+        if isinstance(spot_wallet, dict):
+            return spot_wallet
+        logger.error("Roostoo balance payload missing SpotWallet/Wallet data: %s", payload)
+        return {}
 
     def get_pending_count(self) -> Optional[Dict[str, Any]]:
         """Fetch the number of currently pending orders."""
