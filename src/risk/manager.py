@@ -44,6 +44,7 @@ class RiskManager:
     ) -> tuple[bool, float]:
         """Apply fail-fast portfolio gates and size from the live wallet snapshot."""
         normalized_wallet = self._normalize_wallet(wallet)
+        logger.info("approve_trade wallet=%s", dict(normalized_wallet))
         current_drawdown = self.drawdown(normalized_wallet, current_prices)
         if current_drawdown >= self.max_drawdown:
             logger.warning(
@@ -77,8 +78,27 @@ class RiskManager:
                 return False, 0.0
             quantity = round((free_usd * self.max_position_pct) / last_price, 6)
         elif signal == -1:
-            base_coin = pair.split("/")[0]
-            quantity = round(self._free_balance(normalized_wallet, base_coin) * 0.80, 6)
+            coin = pair.split("/")[0]
+            coin_free = self._free_balance(normalized_wallet, coin)
+            logger.info(
+                "SELL check: %s free=%s wallet keys=%s",
+                coin,
+                coin_free,
+                list(normalized_wallet.keys()),
+            )
+            if coin_free <= 0:
+                locked = self._locked_balance(normalized_wallet, coin)
+                if locked > 0:
+                    logger.warning(
+                        "%s balance is locked (%s). Cancel pending orders first. Wallet=%s",
+                        coin,
+                        locked,
+                        dict(normalized_wallet),
+                    )
+                else:
+                    logger.warning("Cannot sell %s: zero balance. Wallet=%s", coin, dict(normalized_wallet))
+                return False, 0.0
+            quantity = round(coin_free * 0.80, 6)
         else:
             return False, 0.0
 
@@ -165,6 +185,10 @@ class RiskManager:
     def _free_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
         balances = wallet.get(coin, {})
         return self._to_float(balances.get("Free", 0.0))
+
+    def _locked_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
+        balances = wallet.get(coin, {})
+        return self._to_float(balances.get("Lock", 0.0))
 
     def _normalize_wallet(self, wallet: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
         if "SpotWallet" in wallet and isinstance(wallet.get("SpotWallet"), Mapping):

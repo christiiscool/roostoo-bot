@@ -48,6 +48,36 @@ def test_position_sizing_is_correct_for_buy_and_sell() -> None:
     assert sell_qty == 1.6
 
 
+def test_sell_uses_spot_wallet_coin_balance() -> None:
+    manager = RiskManager()
+    wallet = {
+        "SpotWallet": {
+            "USD": {"Free": 100, "Lock": 0},
+            "ETH": {"Free": 1.25, "Lock": 0},
+        }
+    }
+    prices = {"ETH/USD": 2500}
+
+    approved, quantity = manager.approve_trade("ETH/USD", -1, wallet, prices)
+
+    assert approved is True
+    assert quantity == 1.0
+
+
+def test_sell_rejects_when_balance_is_locked_only() -> None:
+    manager = RiskManager()
+    wallet = {
+        "BTC": {"Free": 0, "Lock": 0.5},
+        "USD": {"Free": 100, "Lock": 0},
+    }
+    prices = {"BTC/USD": 50000}
+
+    approved, quantity = manager.approve_trade("BTC/USD", -1, wallet, prices)
+
+    assert approved is False
+    assert quantity == 0.0
+
+
 def test_mini_order_gate_rejects_tiny_orders() -> None:
     manager = RiskManager(max_position_pct=0.20)
     wallet = {"USD": {"Free": 4, "Lock": 0}}
