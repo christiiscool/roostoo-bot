@@ -90,6 +90,7 @@ class TradingBot:
         self.initial_portfolio_value = 0.0
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
+        self.entry_prices: dict[str, float] = {}
 
     def warmup_price_history(self) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
@@ -150,6 +151,8 @@ class TradingBot:
             return
 
         self.latest_prices = tickers
+        self._check_stop_losses(wallet, tickers)
+        wallet = self._current_wallet()
         self._manage_pending_orders(tickers)
         wallet = self._current_wallet()
         self._force_initial_positions(wallet, tickers)
@@ -195,6 +198,12 @@ class TradingBot:
             quantity = 0.0
 
             if final_signal != 0:
+                if final_signal == -1:
+                    coin = pair.split("/")[0]
+                    coin_balance = self._wallet_free_balance(wallet, coin)
+                    if coin_balance <= 0:
+                        logger.debug("Skipping SELL %s: no holdings", pair)
+                        continue
                 self.last_risk_evaluations += 1
                 approved, quantity = self.risk.approve_trade(
                     pair=pair,
@@ -384,9 +393,12 @@ class TradingBot:
         if side == "BUY":
             usd_wallet["Free"] = max(0.0, usd_wallet["Free"] - notional)
             coin_wallet["Free"] += quantity
+            self.entry_prices[pair] = price
         else:
             coin_wallet["Free"] = max(0.0, coin_wallet["Free"] - quantity)
             usd_wallet["Free"] += notional
+            if coin_wallet["Free"] <= 0:
+                self.entry_prices.pop(pair, None)
 
         self.latest_wallet = {
             coin: {"Free": balances["Free"], "Lock": balances.get("Lock", 0.0)}
@@ -409,6 +421,66 @@ class TradingBot:
 
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
+
+    def _check_stop_losses(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        for pair, entry_price in list(self.entry_prices.items()):
+            coin = pair.split("/")[0]
+            current_price = self._to_float(current_prices.get(pair))
+            if current_price <= 0 or entry_price <= 0:
+                continue
+
+            pnl_pct = (current_price - entry_price) / entry_price
+            if pnl_pct >= -0.02:
+                continue
+
+            logger.warning(
+                "STOP LOSS triggered: %s entry=%.6f current=%.6f loss=%.2f%%",
+                pair,
+                entry_price,
+                current_price,
+                pnl_pct * 100.0,
+            )
+            coin_free = self._wallet_free_balance(wallet, coin)
+            if coin_free <= 0:
+                logger.warning("STOP LOSS unable to sell %s: no free balance in wallet.", coin)
+                continue
+
+            amount_precision = self.client.amount_precision.get(pair, 6)
+            quantity = round(coin_free * 0.99, amount_precision)
+            if quantity <= 0:
+                continue
+
+            if self.dry_run:
+                self._apply_simulated_fill(pair=pair, side="SELL", quantity=quantity, price=current_price)
+                self.trades_executed += 1
+                self.daily_trade_count += 1
+                self.risk.update_after_trade(pair)
+                logger.info(
+                    "[DRY RUN] STOP LOSS sell: SELL %.6f %s MARKET @ %.6f",
+                    quantity,
+                    pair,
+                    current_price,
+                )
+                continue
+
+            order_response = self.client.place_order(
+                pair=pair,
+                side="SELL",
+                quantity=f"{quantity:.6f}",
+                order_type="MARKET",
+            )
+            if order_response is None:
+                logger.warning("STOP LOSS order failed for %s.", pair)
+                continue
+
+            self.entry_prices.pop(pair, None)
+            self.trades_executed += 1
+            self.daily_trade_count += 1
+            self.risk.update_after_trade(pair)
 
     def _force_initial_positions(
         self,
@@ -553,6 +625,10 @@ class TradingBot:
         if status == "FILLED":
             self.trades_executed += 1
             self.daily_trade_count += 1
+            if side == "BUY":
+                self.entry_prices[pair] = limit_price
+            else:
+                self.entry_prices.pop(pair, None)
             return
 
         if order_id is None:
@@ -586,6 +662,10 @@ class TradingBot:
             if order_id not in pending_lookup:
                 self.trades_executed += 1
                 self.daily_trade_count += 1
+                if str(metadata["side"]).upper() == "BUY":
+                    self.entry_prices[str(metadata["pair"])] = float(metadata["limit_price"])
+                else:
+                    self.entry_prices.pop(str(metadata["pair"]), None)
                 self.pending_limit_orders.pop(order_id, None)
                 continue
 
@@ -613,6 +693,10 @@ class TradingBot:
                 if market_response is not None:
                     self.trades_executed += 1
                     self.daily_trade_count += 1
+                    if side == "BUY":
+                        self.entry_prices[pair] = self._to_float(current_prices.get(pair))
+                    else:
+                        self.entry_prices.pop(pair, None)
                     logger.info(
                         "ORDER mode=LIVE order_type=MARKET side=%s qty=%.6f pair=%s price=%.6f fallback_from=%s",
                         side,
