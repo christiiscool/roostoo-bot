@@ -61,6 +61,7 @@ class TradingBot:
     def __init__(self) -> None:
         load_dotenv(dotenv_path=ENV_PATH)
         self.client = RoostooClient()
+        self.client.refresh_exchange_rules()
         self.risk = RiskManager()
         self.strategies = [MomentumStrategy(), MeanReversionStrategy()]
         self.strategy_weights = {"momentum": 0.6, "mean_reversion": 0.4}
@@ -203,7 +204,13 @@ class TradingBot:
                 )
                 if approved:
                     side = "BUY" if final_signal == 1 else "SELL"
-                    limit_price = self._limit_price_for_signal(side, last_price)
+                    limit_price = self._limit_price_for_signal(pair, side, last_price)
+                    amount_precision = self.client.amount_precision.get(pair, 6)
+                    quantity = round(quantity, amount_precision)
+                    mini = self.client.mini_order.get(pair, 1.0)
+                    if quantity * last_price < mini:
+                        logger.warning("Order too small: %s %s < MiniOrder %s", quantity, pair, mini)
+                        continue
                     if self.dry_run:
                         self._apply_simulated_fill(pair=pair, side=side, quantity=quantity, price=limit_price)
                         logger.info(
@@ -419,9 +426,15 @@ class TradingBot:
             if price <= 0 or free_usd <= 0:
                 continue
             quantity = round((free_usd * 0.02) / price, 6)
+            amount_precision = self.client.amount_precision.get(pair, 6)
+            quantity = round(quantity, amount_precision)
             if quantity <= 0:
                 continue
-            limit_price = self._limit_price_for_signal("BUY", price)
+            mini = self.client.mini_order.get(pair, 1.0)
+            if quantity * price < mini:
+                logger.warning("Order too small: %s %s < MiniOrder %s", quantity, pair, mini)
+                continue
+            limit_price = self._limit_price_for_signal(pair, "BUY", price)
             if self.dry_run:
                 self._apply_simulated_fill(pair=pair, side="BUY", quantity=quantity, price=limit_price)
                 self.trades_executed += 1
@@ -512,10 +525,11 @@ class TradingBot:
 
         self.initial_portfolio_value = self.risk.portfolio_value(self.simulated_wallet, current_prices)
 
-    def _limit_price_for_signal(self, side: str, last_price: float) -> float:
+    def _limit_price_for_signal(self, pair: str, side: str, last_price: float) -> float:
+        precision = self.client.price_precision.get(pair, 2)
         if side == "BUY":
-            return round(last_price * 0.9995, 6)
-        return round(last_price * 1.0005, 6)
+            return round(last_price * 0.9998, precision)
+        return round(last_price * 1.0002, precision)
 
     def _register_limit_order(
         self,

@@ -39,6 +39,9 @@ class RoostooClient:
             or os.getenv("ROOSTOO_BASE_URL", "https://mock-api.roostoo.com")
         ).rstrip("/")
         self.timeout = timeout
+        self.price_precision: dict[str, int] = {}
+        self.amount_precision: dict[str, int] = {}
+        self.mini_order: dict[str, float] = {}
 
     def _timestamp_ms(self) -> str:
         return str(int(time.time() * 1000))
@@ -182,6 +185,18 @@ class RoostooClient:
                     return trade_pairs
         return {}
 
+    def refresh_exchange_rules(self) -> Optional[Dict[str, Any]]:
+        payload = self.get_exchange_info()
+        if payload is None:
+            return None
+
+        trade_pairs = self._extract_trade_pairs(payload)
+        for pair, info in trade_pairs.items():
+            self.price_precision[pair] = int(info.get("PricePrecision", 2))
+            self.amount_precision[pair] = int(info.get("AmountPrecision", 6))
+            self.mini_order[pair] = float(info.get("MiniOrder", 1.0))
+        return payload
+
     def _validate_order_inputs(
         self,
         pair: str,
@@ -203,8 +218,10 @@ class RoostooClient:
             logger.error("Limit orders require a price.")
             return None
 
+        amount_precision = self.amount_precision.get(pair, 6)
         try:
-            quantity_decimal = Decimal(str(quantity))
+            rounded_quantity = round(float(quantity), amount_precision)
+            quantity_decimal = Decimal(str(rounded_quantity))
         except (InvalidOperation, TypeError, ValueError):
             logger.error("Invalid quantity: %s", quantity)
             return None
@@ -217,8 +234,10 @@ class RoostooClient:
         serialized_price: Optional[str] = None
 
         if resolved_type == "LIMIT":
+            price_precision = self.price_precision.get(pair, 2)
             try:
-                price_decimal = Decimal(str(price))
+                rounded_price = round(float(price), price_precision)
+                price_decimal = Decimal(str(rounded_price))
             except (InvalidOperation, TypeError, ValueError):
                 logger.error("Invalid price: %s", price)
                 return None
@@ -226,7 +245,7 @@ class RoostooClient:
                 logger.error("Price must be positive: %s", price)
                 return None
             trade_value = quantity_decimal * price_decimal
-            serialized_price = str(price)
+            serialized_price = f"{rounded_price:.{price_precision}f}"
         else:
             ticker = self.get_ticker(pair=pair)
             if ticker is None:
@@ -244,22 +263,13 @@ class RoostooClient:
                 logger.error("Invalid ticker LastPrice for pair %s: %s", pair, ticker_entry.get("LastPrice"))
                 return None
 
-        exchange_info = self.get_exchange_info()
-        if exchange_info is None:
-            logger.error("Unable to fetch exchange info for order validation.")
-            return None
-        trade_pairs = self._extract_trade_pairs(exchange_info)
-        pair_info = trade_pairs.get(pair)
-        if not isinstance(pair_info, dict):
-            logger.error("Pair %s not found in exchange info.", pair)
-            return None
+        if pair not in self.mini_order:
+            exchange_info = self.refresh_exchange_rules()
+            if exchange_info is None:
+                logger.error("Unable to fetch exchange info for order validation.")
+                return None
 
-        mini_order = pair_info.get("MiniOrder")
-        try:
-            mini_order_decimal = Decimal(str(mini_order))
-        except (InvalidOperation, TypeError, ValueError):
-            logger.error("Invalid MiniOrder value for pair %s: %s", pair, mini_order)
-            return None
+        mini_order_decimal = Decimal(str(self.mini_order.get(pair, 1.0)))
 
         if trade_value is None or trade_value <= mini_order_decimal:
             logger.error(
@@ -274,7 +284,7 @@ class RoostooClient:
             "pair": pair,
             "side": normalized_side,
             "type": resolved_type,
-            "quantity": str(quantity),
+            "quantity": f"{rounded_quantity:.{amount_precision}f}",
         }
         if serialized_price is not None:
             payload["price"] = serialized_price
