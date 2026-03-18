@@ -30,6 +30,23 @@ def test_cooldown_prevents_rapid_retrading() -> None:
     assert quantity == 0.0
 
 
+def test_cooldown_does_not_block_sell_exits() -> None:
+    manager = RiskManager(cooldown_seconds=300)
+    wallet = {
+        "USD": {"Free": 100, "Lock": 0},
+        "BTC": {"Free": 1.0, "Lock": 0},
+    }
+    prices = {"BTC/USD": 50000}
+
+    with patch("src.risk.manager.time.time", return_value=1000.0):
+        manager.update_after_trade("BTC/USD")
+    with patch("src.risk.manager.time.time", return_value=1100.0):
+        approved, quantity = manager.approve_trade("BTC/USD", -1, wallet, prices)
+
+    assert approved is True
+    assert quantity == 0.8
+
+
 def test_position_sizing_is_correct_for_buy_and_sell() -> None:
     manager = RiskManager(max_position_pct=0.20)
     buy_wallet = {"USD": {"Free": 1000, "Lock": 0}}

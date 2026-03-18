@@ -57,7 +57,7 @@ class RiskManager:
 
         now = time.time()
         last_trade_time = self.last_trade_times.get(pair)
-        if last_trade_time is not None and (now - last_trade_time) < self.cooldown_seconds:
+        if signal == 1 and last_trade_time is not None and (now - last_trade_time) < self.cooldown_seconds:
             logger.info("Trade rejected for %s due to cooldown.", pair)
             return False, 0.0
 
