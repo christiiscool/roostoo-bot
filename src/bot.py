@@ -159,6 +159,7 @@ class TradingBot:
         wallet = self._current_wallet()
         required_bars = max(strategy.required_bars() for strategy in self.strategies)
         signal_threshold = self._current_signal_threshold()
+        new_buy_orders = 0
         logger.info("Processing %s pairs: %s", len(self.pairs), self.pairs)
 
         for pair in self.pairs:
@@ -213,6 +214,15 @@ class TradingBot:
                 )
                 if approved:
                     side = "BUY" if final_signal == 1 else "SELL"
+                    if (
+                        not self.dry_run
+                        and side == "BUY"
+                        and (self._count_pending_buys() >= 2 or new_buy_orders >= 2)
+                    ):
+                        logger.info("Skipping BUY %s: pending/new BUY order cap reached.", pair)
+                        approved = False
+                        quantity = 0.0
+                        continue
                     amount_precision = self.client.amount_precision.get(pair, 6)
                     quantity = round(quantity, amount_precision)
                     mini = self.client.mini_order.get(pair, 1.0)
@@ -277,10 +287,13 @@ class TradingBot:
                                 limit_price=limit_price,
                                 order_response=order_response,
                             )
-                    if approved:
+                            new_buy_orders += 1
+                    if approved and self.dry_run:
                         self.risk.update_after_trade(pair)
-                        if self.dry_run:
-                            self.trades_executed += 1
+                        self.trades_executed += 1
+                        wallet = self._current_wallet()
+                    elif approved and not self.dry_run and side == "SELL":
+                        self.risk.update_after_trade(pair)
                         wallet = self._current_wallet()
 
             logger.debug(
@@ -554,7 +567,6 @@ class TradingBot:
                         limit_price=limit_price,
                         order_response=order_response,
                     )
-                    self.risk.update_after_trade(pair)
 
     def _is_all_cash(self, wallet: Mapping[str, Mapping[str, Any]]) -> bool:
         usd_balance = self._wallet_free_balance(wallet, "USD")
@@ -715,6 +727,7 @@ class TradingBot:
 
             age_seconds = time.time() - float(metadata["submitted_at"])
             age_ticks = self.tick_count - int(metadata["submitted_tick"])
+            side = str(metadata["side"])
 
             if age_seconds >= 600:
                 self.client.cancel_order(order_id=order_id)
@@ -722,9 +735,8 @@ class TradingBot:
                 logger.info("Cancelled stale limit order %s after %.0f seconds.", order_id, age_seconds)
                 continue
 
-            if age_ticks >= 2:
+            if age_ticks >= (1 if side == "BUY" else 2):
                 pair = str(metadata["pair"])
-                side = str(metadata["side"])
                 quantity = float(metadata["quantity"])
                 self.client.cancel_order(order_id=order_id)
                 market_response = self.client.place_order(
@@ -737,6 +749,7 @@ class TradingBot:
                 if market_response is not None:
                     self.trades_executed += 1
                     self.daily_trade_count += 1
+                    self.risk.update_after_trade(pair)
                     if side == "BUY":
                         self.entry_prices[pair] = self._to_float(current_prices.get(pair))
                     else:
@@ -909,6 +922,13 @@ class TradingBot:
                 if isinstance(orders, list):
                     return [dict(order) for order in orders if isinstance(order, Mapping)]
         return []
+
+    def _count_pending_buys(self) -> int:
+        return sum(
+            1
+            for order in self.pending_limit_orders.values()
+            if str(order.get("side", "")).upper() == "BUY"
+        )
 
     def _extract_server_time(self, payload: Optional[Mapping[str, Any]]) -> Optional[int]:
         if payload is None:
