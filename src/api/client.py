@@ -378,7 +378,7 @@ class RoostooClient:
         if pair is not None:
             params["pair"] = pair
         if pending_only is not None:
-            params["pending_only"] = str(pending_only).lower()
+            params["pending_only"] = "TRUE" if pending_only else "FALSE"
         return self._request("POST", "/v3/query_order", params=params, signed=True)
 
     def cancel_order(

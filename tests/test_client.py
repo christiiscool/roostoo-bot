@@ -185,6 +185,21 @@ def test_cancel_order_allows_cancel_all(mock_post, mock_check_clock_skew) -> Non
     assert "pair" not in kwargs["data"]
 
 
+@patch.object(RoostooClient, "_check_clock_skew")
+@patch("src.api.client.requests.post")
+def test_query_orders_uses_uppercase_pending_only_flag(mock_post, mock_check_clock_skew) -> None:
+    mock_post.return_value = make_response({"Success": True, "Orders": []})
+    client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
+
+    with patch.object(client, "_timestamp_ms", return_value="1710000000005"):
+        result = client.query_orders(pending_only=True)
+
+    assert result == {"Success": True, "Orders": []}
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"]["pending_only"] == "TRUE"
+    assert kwargs["data"]["timestamp"] == "1710000000005"
+
+
 @patch("src.api.client.requests.get")
 def test_returns_none_when_api_reports_unsuccessful_response(mock_get) -> None:
     mock_get.return_value = make_response({"Success": False, "Message": "bad request"})

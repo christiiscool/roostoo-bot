@@ -213,7 +213,6 @@ class TradingBot:
                 )
                 if approved:
                     side = "BUY" if final_signal == 1 else "SELL"
-                    limit_price = self._limit_price_for_signal(pair, side, last_price)
                     amount_precision = self.client.amount_precision.get(pair, 6)
                     quantity = round(quantity, amount_precision)
                     mini = self.client.mini_order.get(pair, 1.0)
@@ -221,6 +220,7 @@ class TradingBot:
                         logger.warning("Order too small: %s %s < MiniOrder %s", quantity, pair, mini)
                         continue
                     if self.dry_run:
+                        limit_price = self._limit_price_for_signal(pair, side, last_price)
                         self._apply_simulated_fill(pair=pair, side=side, quantity=quantity, price=limit_price)
                         logger.info(
                             "[DRY RUN] Would place: %s %.6f %s LIMIT @ %.6f",
@@ -239,17 +239,37 @@ class TradingBot:
                         self.last_dry_run_orders += 1
                         self.daily_trade_count += 1
                     else:
-                        order_response = self.client.place_order(
-                            pair=pair,
-                            side=side,
-                            quantity=f"{quantity:.6f}",
-                            price=f"{limit_price:.6f}",
-                            order_type="LIMIT",
-                        )
+                        if side == "SELL":
+                            order_response = self.client.place_order(
+                                pair=pair,
+                                side=side,
+                                quantity=f"{quantity:.6f}",
+                                order_type="MARKET",
+                            )
+                            if order_response is not None:
+                                self.trades_executed += 1
+                                self.daily_trade_count += 1
+                                self.entry_prices.pop(pair, None)
+                                logger.info(
+                                    "ORDER mode=LIVE order_type=MARKET side=%s qty=%.6f pair=%s price=%.6f",
+                                    side,
+                                    quantity,
+                                    pair,
+                                    last_price,
+                                )
+                        else:
+                            limit_price = self._limit_price_for_signal(pair, side, last_price)
+                            order_response = self.client.place_order(
+                                pair=pair,
+                                side=side,
+                                quantity=f"{quantity:.6f}",
+                                price=f"{limit_price:.6f}",
+                                order_type="LIMIT",
+                            )
                         if order_response is None:
                             approved = False
                             quantity = 0.0
-                        else:
+                        elif side == "BUY":
                             self._register_limit_order(
                                 pair=pair,
                                 side=side,
@@ -657,6 +677,30 @@ class TradingBot:
             for order in pending_orders
             if order.get("OrderId") or order.get("order_id")
         }
+        recovered_at = time.time()
+        for order_id, order in pending_lookup.items():
+            if order_id in self.pending_limit_orders:
+                continue
+            pair = self._extract_order_pair(order)
+            side = self._extract_order_side(order)
+            quantity = self._extract_order_quantity(order)
+            if pair is None or side is None or quantity <= 0:
+                continue
+            self.pending_limit_orders[order_id] = {
+                "pair": pair,
+                "side": side,
+                "quantity": quantity,
+                "limit_price": self._extract_order_price(order, current_prices, pair),
+                "submitted_tick": max(0, self.tick_count - 2),
+                "submitted_at": recovered_at - 601,
+            }
+            logger.warning(
+                "Recovered orphan pending order %s for %s %s qty=%.6f; scheduling immediate cleanup.",
+                order_id,
+                side,
+                pair,
+                quantity,
+            )
 
         for order_id, metadata in list(self.pending_limit_orders.items()):
             if order_id not in pending_lookup:
@@ -738,6 +782,35 @@ class TradingBot:
                 if status is not None:
                     return str(status).upper()
         return ""
+
+    def _extract_order_pair(self, payload: Mapping[str, Any]) -> Optional[str]:
+        pair = payload.get("Pair") or payload.get("pair")
+        if pair is None:
+            return None
+        return str(pair)
+
+    def _extract_order_side(self, payload: Mapping[str, Any]) -> Optional[str]:
+        side = payload.get("Side") or payload.get("side")
+        if side is None:
+            return None
+        return str(side).upper()
+
+    def _extract_order_quantity(self, payload: Mapping[str, Any]) -> float:
+        for key in ("Quantity", "quantity", "RemainQty", "remain_qty", "RemainingQty", "remaining_qty"):
+            if key in payload:
+                return self._to_float(payload.get(key))
+        return 0.0
+
+    def _extract_order_price(
+        self,
+        payload: Mapping[str, Any],
+        current_prices: Mapping[str, Any],
+        pair: str,
+    ) -> float:
+        for key in ("Price", "price"):
+            if key in payload:
+                return self._to_float(payload.get(key))
+        return self._to_float(current_prices.get(pair))
 
     def _cancel_pending_orders(self) -> None:
         pending_payload = self.client.query_orders(pending_only=True)
