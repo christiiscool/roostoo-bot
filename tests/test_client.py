@@ -120,7 +120,7 @@ def test_place_order_limit_includes_price_and_type(
 @patch("src.api.client.requests.get")
 def test_get_balance_returns_wallet_payload(mock_get, mock_check_clock_skew) -> None:
     mock_get.return_value = make_response(
-        {"Success": True, "SpotWallet": {"BTC": {"Free": "1.0", "Lock": "0.0"}}}
+        {"Success": True, "Wallet": {"BTC": {"Free": "1.0", "Lock": "0.0"}}}
     )
     client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
 
@@ -137,9 +137,9 @@ def test_get_balance_returns_wallet_payload(mock_get, mock_check_clock_skew) -> 
 
 @patch.object(RoostooClient, "_check_clock_skew")
 @patch("src.api.client.requests.get")
-def test_get_balance_falls_back_to_wallet_key(mock_get, mock_check_clock_skew) -> None:
+def test_get_balance_accepts_spot_wallet_fallback(mock_get, mock_check_clock_skew) -> None:
     mock_get.return_value = make_response(
-        {"Success": True, "Wallet": {"USD": {"Free": "100.0", "Lock": "0.0"}}}
+        {"Success": True, "SpotWallet": {"USD": {"Free": "100.0", "Lock": "0.0"}}}
     )
     client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
 
@@ -147,6 +147,42 @@ def test_get_balance_falls_back_to_wallet_key(mock_get, mock_check_clock_skew) -
         result = client.get_balance()
 
     assert result == {"USD": {"Free": "100.0", "Lock": "0.0"}}
+
+
+@patch.object(RoostooClient, "_check_clock_skew")
+@patch("src.api.client.requests.get")
+def test_get_pending_count_allows_zero_pending_payload(mock_get, mock_check_clock_skew) -> None:
+    mock_get.return_value = make_response(
+        {
+            "Success": False,
+            "ErrMsg": "no pending order under this account",
+            "TotalPending": 0,
+            "OrderPairs": {},
+        }
+    )
+    client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
+
+    with patch.object(client, "_timestamp_ms", return_value="1710000000003"):
+        result = client.get_pending_count()
+
+    assert result is not None
+    assert result["TotalPending"] == 0
+
+
+@patch.object(RoostooClient, "_check_clock_skew")
+@patch("src.api.client.requests.post")
+def test_cancel_order_allows_cancel_all(mock_post, mock_check_clock_skew) -> None:
+    mock_post.return_value = make_response({"Success": True, "CanceledList": [1, 2]})
+    client = RoostooClient(api_key="key", secret_key="secret", base_url="https://mock-api.roostoo.com")
+
+    with patch.object(client, "_timestamp_ms", return_value="1710000000004"):
+        result = client.cancel_order()
+
+    assert result == {"Success": True, "CanceledList": [1, 2]}
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"]["timestamp"] == "1710000000004"
+    assert "order_id" not in kwargs["data"]
+    assert "pair" not in kwargs["data"]
 
 
 @patch("src.api.client.requests.get")

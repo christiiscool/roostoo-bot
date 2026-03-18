@@ -72,7 +72,12 @@ class RoostooClient:
             "MSG-SIGNATURE": self._sign_params(params),
         }
 
-    def _parse_json(self, response: requests.Response) -> Optional[Dict[str, Any]]:
+    def _parse_json(
+        self,
+        response: requests.Response,
+        *,
+        allow_unsuccessful_payload: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         try:
             payload = response.json()
         except ValueError:
@@ -83,15 +88,23 @@ class RoostooClient:
             logger.error("Unexpected Roostoo payload type: %s", type(payload).__name__)
             return None
 
-        if payload.get("Success") is False:
+        if payload.get("Success") is False and not allow_unsuccessful_payload:
             logger.error("Roostoo API returned Success=false: %s", payload)
             return None
 
         return payload
 
-    def _handle_response(self, response: requests.Response) -> Optional[Dict[str, Any]]:
+    def _handle_response(
+        self,
+        response: requests.Response,
+        *,
+        allow_unsuccessful_payload: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         if response.status_code == 200:
-            return self._parse_json(response)
+            return self._parse_json(
+                response,
+                allow_unsuccessful_payload=allow_unsuccessful_payload,
+            )
         logger.error("HTTP %s: %s", response.status_code, response.text)
         return None
 
@@ -124,7 +137,7 @@ class RoostooClient:
                 return
             local_time = int(time.time() * 1000)
             skew = abs(server_time - local_time)
-            if skew > 5000:
+            if skew > 60 * 1000:
                 logger.warning(
                     "Detected clock skew above threshold: server=%s local=%s skew_ms=%s",
                     server_time,
@@ -140,6 +153,7 @@ class RoostooClient:
         path: str,
         params: Optional[Mapping[str, Any]] = None,
         signed: bool = False,
+        allow_unsuccessful_payload: bool = False,
     ) -> Optional[Dict[str, Any]]:
         request_params = self._normalize_params(params or {})
         headers: Dict[str, str] = {}
@@ -164,7 +178,10 @@ class RoostooClient:
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            return self._handle_response(response)
+            return self._handle_response(
+                response,
+                allow_unsuccessful_payload=allow_unsuccessful_payload,
+            )
         except requests.RequestException:
             logger.exception("Roostoo request failed for %s %s", method.upper(), path)
             return None
@@ -318,7 +335,12 @@ class RoostooClient:
 
     def get_pending_count(self) -> Optional[Dict[str, Any]]:
         """Fetch the number of currently pending orders."""
-        return self._request("GET", "/v3/pending_count", signed=True)
+        return self._request(
+            "GET",
+            "/v3/pending_count",
+            signed=True,
+            allow_unsuccessful_payload=True,
+        )
 
     def place_order(
         self,
@@ -365,9 +387,6 @@ class RoostooClient:
         pair: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Cancel one order by id or cancel orders for a pair."""
-        if order_id is None and pair is None:
-            logger.error("cancel_order requires order_id or pair.")
-            return None
         params: Dict[str, Any] = {}
         if order_id is not None:
             params["order_id"] = order_id
