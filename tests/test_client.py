@@ -74,8 +74,8 @@ def test_place_order_market_posts_form_encoded_payload(
     _, kwargs = mock_post.call_args
     assert kwargs["data"]["pair"] == "BTC/USD"
     assert kwargs["data"]["side"] == "BUY"
+    assert kwargs["data"]["type"] == "MARKET"
     assert kwargs["data"]["quantity"] == "0.01"
-    assert kwargs["data"]["order_type"] == "MARKET"
     assert kwargs["data"]["timestamp"] == "1710000000000"
     assert kwargs["headers"]["RST-API-KEY"] == "key"
     assert "MSG-SIGNATURE" in kwargs["headers"]
@@ -110,7 +110,7 @@ def test_place_order_limit_includes_price_and_type(
     assert result == {"Success": True, "OrderDetail": {"OrderId": "456"}}
     _, kwargs = mock_post.call_args
     assert kwargs["data"]["price"] == "2500"
-    assert kwargs["data"]["order_type"] == "LIMIT"
+    assert kwargs["data"]["type"] == "LIMIT"
     assert kwargs["data"]["timestamp"] == "1710000000001"
     mock_check_clock_skew.assert_called_once()
 

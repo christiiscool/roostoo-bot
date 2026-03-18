@@ -143,6 +143,7 @@ class RoostooClient:
 
         if signed:
             request_params.setdefault("timestamp", self._timestamp_ms())
+            logger.debug("total_params: %s", request_params)
             headers.update(self._auth_headers(request_params))
             self._check_clock_skew()
 
@@ -272,8 +273,8 @@ class RoostooClient:
         payload = {
             "pair": pair,
             "side": normalized_side,
+            "type": resolved_type,
             "quantity": str(quantity),
-            "order_type": resolved_type,
         }
         if serialized_price is not None:
             payload["price"] = serialized_price
@@ -315,7 +316,7 @@ class RoostooClient:
         side: str,
         quantity: Any,
         price: Optional[Any] = None,
-        order_type: Optional[str] = None,
+        order_type: str = "MARKET",
     ) -> Optional[Dict[str, Any]]:
         """Submit a signed market or limit order after MiniOrder validation."""
         payload = self._validate_order_inputs(
@@ -327,6 +328,8 @@ class RoostooClient:
         )
         if payload is None:
             return None
+        assert "type" in payload, "type field missing from order payload"
+        logger.debug("place_order payload: %s", payload)
         return self._request("POST", "/v3/place_order", params=payload, signed=True)
 
     def query_orders(
