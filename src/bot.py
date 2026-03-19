@@ -91,6 +91,7 @@ class TradingBot:
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
+        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0035))
 
     def warmup_price_history(self) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
@@ -151,6 +152,10 @@ class TradingBot:
             return
 
         self.latest_prices = tickers
+        self._seed_entry_prices_from_holdings(wallet, tickers)
+        self._log_held_positions(wallet, tickers)
+        self._check_portfolio_derisk(wallet, tickers)
+        wallet = self._current_wallet()
         self._check_stop_losses(wallet, tickers)
         wallet = self._current_wallet()
         self._manage_pending_orders(tickers)
@@ -455,6 +460,104 @@ class TradingBot:
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
 
+    def _seed_entry_prices_from_holdings(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        for coin, balances in wallet.items():
+            if coin == "USD":
+                continue
+            free_balance = self._to_float(balances.get("Free", 0.0))
+            if free_balance <= 0:
+                continue
+            pair = f"{coin}/USD"
+            if pair in self.entry_prices:
+                continue
+            current_price = self._to_float(current_prices.get(pair))
+            if current_price <= 0:
+                continue
+            self.entry_prices[pair] = current_price
+            logger.warning(
+                "Seeded missing entry price for %s from current market price %.6f after restart/recovery.",
+                pair,
+                current_price,
+            )
+
+    def _log_held_positions(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        for coin, balances in wallet.items():
+            if coin == "USD":
+                continue
+            free_balance = self._to_float(balances.get("Free", 0.0))
+            if free_balance <= 0:
+                continue
+            pair = f"{coin}/USD"
+            current_price = self._to_float(current_prices.get(pair))
+            entry_price = self.entry_prices.get(pair, 0.0)
+            pnl_pct = ((current_price - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
+            logger.info(
+                "HELD pair=%s qty=%.6f entry=%.6f current=%.6f pnl_pct=%.2f",
+                pair,
+                free_balance,
+                entry_price,
+                current_price,
+                pnl_pct,
+            )
+
+    def _check_portfolio_derisk(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        held_pairs: list[tuple[str, float, float]] = []
+        for coin, balances in wallet.items():
+            if coin == "USD":
+                continue
+            free_balance = self._to_float(balances.get("Free", 0.0))
+            if free_balance <= 0:
+                continue
+            pair = f"{coin}/USD"
+            entry_price = self.entry_prices.get(pair, 0.0)
+            current_price = self._to_float(current_prices.get(pair))
+            if entry_price <= 0 or current_price <= 0:
+                continue
+            pnl_pct = (current_price - entry_price) / entry_price
+            held_pairs.append((pair, free_balance, pnl_pct))
+
+        if len(held_pairs) < self.risk.max_open_positions:
+            return
+
+        portfolio_drawdown = self.risk.drawdown(wallet, current_prices)
+        if portfolio_drawdown < self.portfolio_derisk_drawdown:
+            return
+
+        weakest_pair, free_balance, weakest_pnl = min(held_pairs, key=lambda item: item[2])
+        current_price = self._to_float(current_prices.get(weakest_pair))
+        if weakest_pnl >= 0 or current_price <= 0:
+            return
+
+        amount_precision = self.client.amount_precision.get(weakest_pair, 6)
+        quantity = round(free_balance * 0.99, amount_precision)
+        if quantity <= 0:
+            return
+        logger.warning(
+            "PORTFOLIO DERISK triggered: pair=%s drawdown=%.2f%% pnl_pct=%.2f%% qty=%.6f",
+            weakest_pair,
+            portfolio_drawdown * 100.0,
+            weakest_pnl * 100.0,
+            quantity,
+        )
+        self._execute_market_sell(
+            pair=weakest_pair,
+            quantity=quantity,
+            current_price=current_price,
+            reason="portfolio_derisk",
+        )
+
     def _check_stop_losses(
         self,
         wallet: Mapping[str, Mapping[str, Any]],
@@ -487,33 +590,12 @@ class TradingBot:
             if quantity <= 0:
                 continue
 
-            if self.dry_run:
-                self._apply_simulated_fill(pair=pair, side="SELL", quantity=quantity, price=current_price)
-                self.trades_executed += 1
-                self.daily_trade_count += 1
-                self.risk.update_after_trade(pair)
-                logger.info(
-                    "[DRY RUN] STOP LOSS sell: SELL %.6f %s MARKET @ %.6f",
-                    quantity,
-                    pair,
-                    current_price,
-                )
-                continue
-
-            order_response = self.client.place_order(
+            self._execute_market_sell(
                 pair=pair,
-                side="SELL",
-                quantity=f"{quantity:.6f}",
-                order_type="MARKET",
+                quantity=quantity,
+                current_price=current_price,
+                reason="stop_loss",
             )
-            if order_response is None:
-                logger.warning("STOP LOSS order failed for %s.", pair)
-                continue
-
-            self.entry_prices.pop(pair, None)
-            self.trades_executed += 1
-            self.daily_trade_count += 1
-            self.risk.update_after_trade(pair)
 
     def _force_initial_positions(
         self,
@@ -582,6 +664,50 @@ class TradingBot:
         if not isinstance(balances, Mapping):
             return 0.0
         return self._to_float(balances.get("Free", 0.0))
+
+    def _execute_market_sell(
+        self,
+        pair: str,
+        quantity: float,
+        current_price: float,
+        reason: str,
+    ) -> bool:
+        if self.dry_run:
+            self._apply_simulated_fill(pair=pair, side="SELL", quantity=quantity, price=current_price)
+            self.trades_executed += 1
+            self.daily_trade_count += 1
+            self.risk.update_after_trade(pair)
+            logger.info(
+                "[DRY RUN] %s sell: SELL %.6f %s MARKET @ %.6f",
+                reason.upper(),
+                quantity,
+                pair,
+                current_price,
+            )
+            return True
+
+        order_response = self.client.place_order(
+            pair=pair,
+            side="SELL",
+            quantity=f"{quantity:.6f}",
+            order_type="MARKET",
+        )
+        if order_response is None:
+            logger.warning("%s order failed for %s.", reason.upper(), pair)
+            return False
+
+        self.entry_prices.pop(pair, None)
+        self.trades_executed += 1
+        self.daily_trade_count += 1
+        self.risk.update_after_trade(pair)
+        logger.info(
+            "ORDER mode=LIVE order_type=MARKET side=SELL qty=%.6f pair=%s price=%.6f reason=%s",
+            quantity,
+            pair,
+            current_price,
+            reason,
+        )
+        return True
 
     def _current_signal_threshold(self) -> float:
         if self.daily_tick_count >= 20 and self.daily_trade_count < 3:
