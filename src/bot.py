@@ -103,6 +103,8 @@ class TradingBot:
         if not self.trade_journal_path.is_absolute():
             self.trade_journal_path = PROJECT_ROOT / self.trade_journal_path
         self.trade_journal_path.parent.mkdir(parents=True, exist_ok=True)
+        self.trade_journal_path.touch(exist_ok=True)
+        logger.info("Trade journal path: %s", self.trade_journal_path)
 
     def warmup_price_history(self) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
