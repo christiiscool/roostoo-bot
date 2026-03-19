@@ -24,12 +24,14 @@ class RiskManager:
         max_drawdown: Optional[float] = None,
         cooldown_seconds: Optional[int] = None,
         max_open_positions: int = 3,
+        min_position_value_usd: Optional[float] = None,
     ) -> None:
         load_dotenv(dotenv_path=ENV_PATH)
         self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.20))
         self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.15))
         self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 300))
         self.max_open_positions = int(max_open_positions)
+        self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 10.0))
         self.last_trade_times: dict[str, float] = {}
         self.peak_portfolio: float = 0.0
         self.current_drawdown: float = 0.0
@@ -61,7 +63,7 @@ class RiskManager:
             logger.info("Trade rejected for %s due to cooldown.", pair)
             return False, 0.0
 
-        self.open_positions = self._count_open_positions(normalized_wallet)
+        self.open_positions = self._count_open_positions(normalized_wallet, current_prices)
         if signal == 1 and self.open_positions >= self.max_open_positions:
             logger.info("Trade rejected for %s due to max open positions.", pair)
             return False, 0.0
@@ -175,12 +177,25 @@ class RiskManager:
             "open_positions": self.open_positions,
         }
 
-    def _count_open_positions(self, wallet: Mapping[str, Mapping[str, Any]]) -> int:
-        return sum(
-            1
-            for coin, balances in wallet.items()
-            if coin != "USD" and self._to_float(balances.get("Free", 0.0)) > 0
-        )
+    def _count_open_positions(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> int:
+        open_positions = 0
+        for coin, balances in wallet.items():
+            if coin == "USD":
+                continue
+            free_balance = self._to_float(balances.get("Free", 0.0))
+            if free_balance <= 0:
+                continue
+            pair = f"{coin}/USD"
+            price = self._resolve_pair_price(pair, current_prices)
+            if price is None or price <= 0:
+                continue
+            if (free_balance * price) >= self.min_position_value_usd:
+                open_positions += 1
+        return open_positions
 
     def _free_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
         balances = wallet.get(coin, {})

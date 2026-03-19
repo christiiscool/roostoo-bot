@@ -118,3 +118,26 @@ def test_portfolio_value_sums_all_assets() -> None:
     value = manager.portfolio_value(wallet, prices)
 
     assert value == 1100 + (0.15 * 50000) + (1.5 * 2500)
+
+
+def test_dust_positions_do_not_count_toward_max_open_positions() -> None:
+    manager = RiskManager(max_open_positions=3, min_position_value_usd=10.0)
+    wallet = {
+        "USD": {"Free": 1000, "Lock": 0},
+        "BTC": {"Free": 0.2, "Lock": 0},
+        "BNB": {"Free": 1.0, "Lock": 0},
+        "ETH": {"Free": 0.0001, "Lock": 0},
+        "SOL": {"Free": 0.006, "Lock": 0},
+    }
+    prices = {
+        "BTC/USD": 50000,
+        "BNB/USD": 650,
+        "ETH/USD": 2157.19,
+        "SOL/USD": 89.26,
+    }
+
+    approved, quantity = manager.approve_trade("ETH/USD", 1, wallet, prices)
+
+    assert approved is True
+    assert quantity > 0
+    assert manager.open_positions == 2
