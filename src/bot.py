@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -63,8 +64,11 @@ class TradingBot:
         self.client = RoostooClient()
         self.client.refresh_exchange_rules()
         self.risk = RiskManager()
-        self.strategies = [MomentumStrategy(), MeanReversionStrategy()]
-        self.strategy_weights = {"momentum": 0.6, "mean_reversion": 0.4}
+        self.strategies = self._build_strategies()
+        self.strategy_weights = {
+            "momentum": float(os.getenv("MOMENTUM_WEIGHT", 0.6)),
+            "mean_reversion": float(os.getenv("MEAN_REVERSION_WEIGHT", 0.4)),
+        }
         self.price_history: dict[str, list[float]] = {}
         self.warmup_price_history()
         self.history_window = 50
@@ -75,8 +79,8 @@ class TradingBot:
         logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
-        self.base_signal_threshold = 0.2
-        self.relaxed_signal_threshold = 0.15
+        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.2))
+        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.15))
         self.trades_executed = 0
         self.tick_count = 0
         self.last_signal_count = 0
@@ -94,6 +98,11 @@ class TradingBot:
         self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0035))
         self.consecutive_all_bearish_ticks = 0
         self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.01))
+        trade_journal = os.getenv("TRADE_JOURNAL_FILE", "trade_journal.jsonl")
+        self.trade_journal_path = Path(trade_journal)
+        if not self.trade_journal_path.is_absolute():
+            self.trade_journal_path = PROJECT_ROOT / self.trade_journal_path
+        self.trade_journal_path.parent.mkdir(parents=True, exist_ok=True)
 
     def warmup_price_history(self) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
@@ -466,6 +475,35 @@ class TradingBot:
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
 
+    def _build_strategies(self) -> list[MomentumStrategy | MeanReversionStrategy]:
+        momentum = MomentumStrategy(
+            fast_ema=int(os.getenv("MOMENTUM_FAST_EMA", 12)),
+            slow_ema=int(os.getenv("MOMENTUM_SLOW_EMA", 26)),
+            rsi_period=int(os.getenv("MOMENTUM_RSI_PERIOD", 14)),
+            rsi_overbought=float(os.getenv("MOMENTUM_RSI_OVERBOUGHT", 70)),
+            rsi_oversold=float(os.getenv("MOMENTUM_RSI_OVERSOLD", 30)),
+        )
+        mean_reversion = MeanReversionStrategy(
+            bb_period=int(os.getenv("MEANREV_BB_PERIOD", 20)),
+            bb_std=float(os.getenv("MEANREV_BB_STD", 2.0)),
+            zscore_entry=float(os.getenv("MEANREV_ZSCORE_ENTRY", 1.5)),
+            zscore_exit=float(os.getenv("MEANREV_ZSCORE_EXIT", 0.5)),
+        )
+        logger.info(
+            "Strategy config momentum=(fast=%s slow=%s rsi_period=%s overbought=%s oversold=%s) "
+            "mean_reversion=(bb_period=%s bb_std=%s z_entry=%s z_exit=%s)",
+            momentum.fast_ema,
+            momentum.slow_ema,
+            momentum.rsi_period,
+            momentum.rsi_overbought,
+            momentum.rsi_oversold,
+            mean_reversion.bb_period,
+            mean_reversion.bb_std,
+            mean_reversion.zscore_entry,
+            mean_reversion.zscore_exit,
+        )
+        return [momentum, mean_reversion]
+
     def _seed_entry_prices_from_holdings(
         self,
         wallet: Mapping[str, Mapping[str, Any]],
@@ -710,6 +748,14 @@ class TradingBot:
         self.daily_trade_count += 1
         self.risk.update_after_trade(pair)
         self.entry_prices[pair] = price
+        self._record_trade_event(
+            pair=pair,
+            side="BUY",
+            quantity=quantity,
+            price=price,
+            order_type="MARKET",
+            reason="force_entry",
+        )
         logger.info(
             "ORDER mode=LIVE order_type=MARKET side=BUY qty=%.6f pair=%s price=%.6f reason=force_entry",
             quantity,
@@ -744,6 +790,14 @@ class TradingBot:
             self.trades_executed += 1
             self.daily_trade_count += 1
             self.risk.update_after_trade(pair)
+            self._record_trade_event(
+                pair=pair,
+                side="SELL",
+                quantity=quantity,
+                price=current_price,
+                order_type="MARKET",
+                reason=reason,
+            )
             logger.info(
                 "[DRY RUN] %s sell: SELL %.6f %s MARKET @ %.6f",
                 reason.upper(),
@@ -767,6 +821,14 @@ class TradingBot:
         self.trades_executed += 1
         self.daily_trade_count += 1
         self.risk.update_after_trade(pair)
+        self._record_trade_event(
+            pair=pair,
+            side="SELL",
+            quantity=quantity,
+            price=current_price,
+            order_type="MARKET",
+            reason=reason,
+        )
         logger.info(
             "ORDER mode=LIVE order_type=MARKET side=SELL qty=%.6f pair=%s price=%.6f reason=%s",
             quantity,
@@ -854,6 +916,15 @@ class TradingBot:
                 self.entry_prices[pair] = limit_price
             else:
                 self.entry_prices.pop(pair, None)
+            self.risk.update_after_trade(pair)
+            self._record_trade_event(
+                pair=pair,
+                side=side,
+                quantity=quantity,
+                price=limit_price,
+                order_type="LIMIT",
+                reason="signal",
+            )
             return
 
         if order_id is None:
@@ -911,10 +982,21 @@ class TradingBot:
             if order_id not in pending_lookup:
                 self.trades_executed += 1
                 self.daily_trade_count += 1
-                if str(metadata["side"]).upper() == "BUY":
-                    self.entry_prices[str(metadata["pair"])] = float(metadata["limit_price"])
+                pair = str(metadata["pair"])
+                side = str(metadata["side"]).upper()
+                self.risk.update_after_trade(pair)
+                if side == "BUY":
+                    self.entry_prices[pair] = float(metadata["limit_price"])
                 else:
-                    self.entry_prices.pop(str(metadata["pair"]), None)
+                    self.entry_prices.pop(pair, None)
+                self._record_trade_event(
+                    pair=pair,
+                    side=side,
+                    quantity=float(metadata["quantity"]),
+                    price=float(metadata["limit_price"]),
+                    order_type="LIMIT",
+                    reason="signal",
+                )
                 self.pending_limit_orders.pop(order_id, None)
                 continue
 
@@ -947,6 +1029,14 @@ class TradingBot:
                         self.entry_prices[pair] = self._to_float(current_prices.get(pair))
                     else:
                         self.entry_prices.pop(pair, None)
+                    self._record_trade_event(
+                        pair=pair,
+                        side=side.upper(),
+                        quantity=quantity,
+                        price=self._to_float(current_prices.get(pair)),
+                        order_type="MARKET",
+                        reason="signal_fallback",
+                    )
                     logger.info(
                         "ORDER mode=LIVE order_type=MARKET side=%s qty=%.6f pair=%s price=%.6f fallback_from=%s",
                         side,
@@ -1122,6 +1212,40 @@ class TradingBot:
             for order in self.pending_limit_orders.values()
             if str(order.get("side", "")).upper() == "BUY"
         )
+
+    def _record_trade_event(
+        self,
+        *,
+        pair: str,
+        side: str,
+        quantity: float,
+        price: float,
+        order_type: str,
+        reason: str,
+    ) -> None:
+        current_wallet = self._current_wallet()
+        portfolio_value = self.risk.portfolio_value(current_wallet, self.latest_prices)
+        if self.initial_portfolio_value <= 0:
+            self.initial_portfolio_value = portfolio_value
+        pnl = portfolio_value - self.initial_portfolio_value
+        pnl_pct = (pnl / self.initial_portfolio_value * 100.0) if self.initial_portfolio_value else 0.0
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tick": self.tick_count,
+            "mode": "DRY_RUN" if self.dry_run else "LIVE",
+            "pair": pair,
+            "side": side,
+            "quantity": round(quantity, 8),
+            "price": round(price, 8),
+            "order_type": order_type,
+            "reason": reason,
+            "portfolio_value": round(portfolio_value, 8),
+            "pnl": round(pnl, 8),
+            "pnl_pct": round(pnl_pct, 8),
+            "open_positions": self.risk.summary().get("open_positions", 0),
+        }
+        with self.trade_journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
     def _extract_server_time(self, payload: Optional[Mapping[str, Any]]) -> Optional[int]:
         if payload is None:
