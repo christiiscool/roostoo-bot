@@ -92,6 +92,8 @@ class TradingBot:
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
         self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0035))
+        self.consecutive_all_bearish_ticks = 0
+        self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.01))
 
     def warmup_price_history(self) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
@@ -165,6 +167,7 @@ class TradingBot:
         required_bars = max(strategy.required_bars() for strategy in self.strategies)
         signal_threshold = self._current_signal_threshold()
         new_buy_orders = 0
+        pair_signals: dict[str, int] = {}
         logger.info("Processing %s pairs: %s", len(self.pairs), self.pairs)
 
         for pair in self.pairs:
@@ -199,6 +202,7 @@ class TradingBot:
             )
             if final_signal != 0:
                 self.last_signal_count += 1
+            pair_signals[pair] = final_signal
 
             approved = False
             quantity = 0.0
@@ -330,6 +334,8 @@ class TradingBot:
                 portfolio_summary,
             )
 
+        self._update_bearish_tick_streak(pair_signals)
+        self._force_bearish_bootstrap(wallet, tickers)
         self._emit_performance_summary()
 
     def run(self) -> None:
@@ -649,6 +655,67 @@ class TradingBot:
                         limit_price=limit_price,
                         order_response=order_response,
                     )
+
+    def _update_bearish_tick_streak(self, pair_signals: Mapping[str, int]) -> None:
+        if pair_signals and all(signal == -1 for signal in pair_signals.values()):
+            self.consecutive_all_bearish_ticks += 1
+        else:
+            self.consecutive_all_bearish_ticks = 0
+
+    def _force_bearish_bootstrap(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> None:
+        if self.dry_run:
+            return
+        if self.consecutive_all_bearish_ticks < 3:
+            return
+        if self.risk.open_positions > 0:
+            return
+        if self._count_pending_buys() > 0:
+            return
+
+        pair = "BTC/USD"
+        price = self._to_float(current_prices.get(pair))
+        free_usd = self._wallet_free_balance(wallet, "USD")
+        if price <= 0 or free_usd <= 0:
+            return
+
+        quantity = round((free_usd * self.force_entry_pct) / price, self.client.amount_precision.get(pair, 6))
+        if quantity <= 0:
+            return
+
+        mini = self.client.mini_order.get(pair, 1.0)
+        if quantity * price < mini:
+            return
+
+        logger.warning(
+            "FORCE ENTRY triggered after %s all-bearish ticks: BUY %.6f %s MARKET",
+            self.consecutive_all_bearish_ticks,
+            quantity,
+            pair,
+        )
+        order_response = self.client.place_order(
+            pair=pair,
+            side="BUY",
+            quantity=f"{quantity:.6f}",
+            order_type="MARKET",
+        )
+        if order_response is None:
+            logger.warning("FORCE ENTRY order failed for %s.", pair)
+            return
+
+        self.trades_executed += 1
+        self.daily_trade_count += 1
+        self.risk.update_after_trade(pair)
+        self.entry_prices[pair] = price
+        logger.info(
+            "ORDER mode=LIVE order_type=MARKET side=BUY qty=%.6f pair=%s price=%.6f reason=force_entry",
+            quantity,
+            pair,
+            price,
+        )
 
     def _is_all_cash(self, wallet: Mapping[str, Mapping[str, Any]]) -> bool:
         usd_balance = self._wallet_free_balance(wallet, "USD")
