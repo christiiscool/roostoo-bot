@@ -81,6 +81,8 @@ class TradingBot:
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
         self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.30))
         self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.20))
+        self.max_active_per_pair = int(os.getenv("MAX_ACTIVE_PER_PAIR", 1))
+        self.btc_position_scale = float(os.getenv("BTC_POSITION_SCALE", 0.5))
         self.trades_executed = 0
         self.tick_count = 0
         self.last_signal_count = 0
@@ -237,6 +239,11 @@ class TradingBot:
                 )
                 if approved:
                     side = "BUY" if final_signal == 1 else "SELL"
+                    if side == "BUY" and self._active_pair_exposure(pair, wallet, tickers) >= self.max_active_per_pair:
+                        logger.info("Skipping BUY %s: pair exposure cap reached.", pair)
+                        approved = False
+                        quantity = 0.0
+                        continue
                     if (
                         not self.dry_run
                         and side == "BUY"
@@ -247,6 +254,8 @@ class TradingBot:
                         quantity = 0.0
                         continue
                     amount_precision = self.client.amount_precision.get(pair, 6)
+                    if side == "BUY" and pair == "BTC/USD":
+                        quantity *= self.btc_position_scale
                     quantity = round(quantity, amount_precision)
                     mini = self.client.mini_order.get(pair, 1.0)
                     if quantity * last_price < mini:
@@ -800,6 +809,22 @@ class TradingBot:
     ) -> float:
         coin = pair.split("/")[0]
         return self._wallet_free_balance(wallet, coin) * self._to_float(current_prices.get(pair))
+
+    def _active_pair_exposure(
+        self,
+        pair: str,
+        wallet: Mapping[str, Mapping[str, Any]],
+        current_prices: Mapping[str, Any],
+    ) -> int:
+        active = 0
+        if self._position_value_usd(wallet, pair, current_prices) >= self.risk.min_position_value_usd:
+            active += 1
+        active += sum(
+            1
+            for order in self.pending_limit_orders.values()
+            if str(order.get("pair")) == pair and str(order.get("side", "")).upper() == "BUY"
+        )
+        return active
 
     def _execute_market_sell(
         self,
