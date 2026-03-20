@@ -95,9 +95,12 @@ class TradingBot:
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
-        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0035))
+        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.01))
         self.consecutive_all_bearish_ticks = 0
         self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.01))
+        self.force_entry_cooldown_ticks = int(os.getenv("FORCE_ENTRY_COOLDOWN_TICKS", 30))
+        self.force_entry_min_position_usd = float(os.getenv("FORCE_ENTRY_MIN_POSITION_USD", 25.0))
+        self.last_force_entry_tick = -10_000
         trade_journal = os.getenv("TRADE_JOURNAL_FILE", "trade_journal.jsonl")
         self.trade_journal_path = Path(trade_journal)
         if not self.trade_journal_path.is_absolute():
@@ -715,11 +718,15 @@ class TradingBot:
             return
         if self._count_pending_buys() > 0:
             return
+        if (self.tick_count - self.last_force_entry_tick) < self.force_entry_cooldown_ticks:
+            return
 
         pair = "BTC/USD"
         price = self._to_float(current_prices.get(pair))
         free_usd = self._wallet_free_balance(wallet, "USD")
         if price <= 0 or free_usd <= 0:
+            return
+        if self._position_value_usd(wallet, pair, current_prices) >= self.force_entry_min_position_usd:
             return
 
         quantity = round((free_usd * self.force_entry_pct) / price, self.client.amount_precision.get(pair, 6))
@@ -750,6 +757,7 @@ class TradingBot:
         self.daily_trade_count += 1
         self.risk.update_after_trade(pair)
         self.entry_prices[pair] = price
+        self.last_force_entry_tick = self.tick_count
         self._record_trade_event(
             pair=pair,
             side="BUY",
@@ -779,6 +787,15 @@ class TradingBot:
         if not isinstance(balances, Mapping):
             return 0.0
         return self._to_float(balances.get("Free", 0.0))
+
+    def _position_value_usd(
+        self,
+        wallet: Mapping[str, Mapping[str, Any]],
+        pair: str,
+        current_prices: Mapping[str, Any],
+    ) -> float:
+        coin = pair.split("/")[0]
+        return self._wallet_free_balance(wallet, coin) * self._to_float(current_prices.get(pair))
 
     def _execute_market_sell(
         self,
