@@ -63,6 +63,12 @@ For a dry-run smoke test before deployment:
 python scripts/test_local.py
 ```
 
+To analyze recorded fills and review the trade journal:
+
+```bash
+python scripts/analyze_trades.py
+```
+
 ## Deployment
 
 Deployment automation for AWS EC2 is provided in [scripts/deploy.sh](./scripts/deploy.sh). The script installs dependencies, validates credentials, runs a dry-run smoke test, and starts the bot in a detached `screen` session.
