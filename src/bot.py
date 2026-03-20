@@ -79,8 +79,8 @@ class TradingBot:
         logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
-        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.2))
-        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.15))
+        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.30))
+        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.20))
         self.trades_executed = 0
         self.tick_count = 0
         self.last_signal_count = 0
@@ -95,9 +95,9 @@ class TradingBot:
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
-        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.01))
+        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.015))
         self.consecutive_all_bearish_ticks = 0
-        self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.01))
+        self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.0))
         self.force_entry_cooldown_ticks = int(os.getenv("FORCE_ENTRY_COOLDOWN_TICKS", 30))
         self.force_entry_min_position_usd = float(os.getenv("FORCE_ENTRY_MIN_POSITION_USD", 25.0))
         self.last_force_entry_tick = -10_000
@@ -711,6 +711,8 @@ class TradingBot:
         current_prices: Mapping[str, Any],
     ) -> None:
         if self.dry_run:
+            return
+        if self.force_entry_pct <= 0:
             return
         if self.consecutive_all_bearish_ticks < 3:
             return

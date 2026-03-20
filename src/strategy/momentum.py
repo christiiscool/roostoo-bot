@@ -15,8 +15,8 @@ class MomentumStrategy(BaseStrategy):
         fast_ema: int = 12,
         slow_ema: int = 26,
         rsi_period: int = 14,
-        rsi_overbought: float = 70,
-        rsi_oversold: float = 30,
+        rsi_overbought: float = 65,
+        rsi_oversold: float = 35,
     ) -> None:
         self.fast_ema = fast_ema
         self.slow_ema = slow_ema
@@ -57,8 +57,10 @@ class MomentumStrategy(BaseStrategy):
         last_price = float(prices.iloc[-1])
         rsi_value = float(rsi.iloc[-1])
 
-        if fast_value > slow_value and rsi_value < self.rsi_overbought and (
-            last_price > ema_50_value or rsi_value < 40
+        if (
+            fast_value > slow_value
+            and last_price > ema_50_value
+            and self.rsi_oversold < rsi_value < self.rsi_overbought
         ):
             return 1
         if fast_value < slow_value and rsi_value > self.rsi_oversold:

@@ -15,7 +15,7 @@ class MeanReversionStrategy(BaseStrategy):
         self,
         bb_period: int = 20,
         bb_std: float = 2.0,
-        zscore_entry: float = 1.5,
+        zscore_entry: float = 1.8,
         zscore_exit: float = 0.5,
     ) -> None:
         self.bb_period = bb_period
