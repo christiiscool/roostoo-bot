@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
 
@@ -98,6 +98,9 @@ def main() -> None:
     reason_counts = Counter(str(record.get("reason", "unknown")) for record in records)
     side_counts = Counter(str(record.get("side", "unknown")) for record in records)
     pair_counts = Counter(str(record.get("pair", "unknown")) for record in records)
+    reason_groups: dict[str, list[dict]] = defaultdict(list)
+    for record in records:
+        reason_groups[str(record.get("reason", "unknown"))].append(record)
 
     print("=== ROOSTOO TRADE ANALYSIS ===")
     print(f"Journal:        {journal_path}")
@@ -117,6 +120,17 @@ def main() -> None:
     print("By Pair:")
     for key, value in sorted(pair_counts.items()):
         print(f"  {key:<10} {value}")
+    print()
+    print("Reason Performance:")
+    for reason, items in sorted(reason_groups.items()):
+        first_value = float(items[0].get("portfolio_value", 0.0))
+        last_value = float(items[-1].get("portfolio_value", 0.0))
+        reason_pnl = last_value - first_value
+        reason_pnl_pct = (reason_pnl / first_value * 100.0) if first_value else 0.0
+        print(
+            f"  {reason:<18} count={len(items):<4} pnl={reason_pnl:+,.2f} "
+            f"pnl_pct={reason_pnl_pct:+.2f}%"
+        )
     print()
     print("Last 10 Records:")
     for record in records[-10:]:

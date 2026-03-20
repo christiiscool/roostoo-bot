@@ -95,7 +95,7 @@ class TradingBot:
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
-        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.015))
+        self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0))
         self.consecutive_all_bearish_ticks = 0
         self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.0))
         self.force_entry_cooldown_ticks = int(os.getenv("FORCE_ENTRY_COOLDOWN_TICKS", 30))
@@ -562,6 +562,8 @@ class TradingBot:
         wallet: Mapping[str, Mapping[str, Any]],
         current_prices: Mapping[str, Any],
     ) -> None:
+        if self.portfolio_derisk_drawdown <= 0:
+            return
         held_pairs: list[tuple[str, float, float]] = []
         for coin, balances in wallet.items():
             if coin == "USD":
