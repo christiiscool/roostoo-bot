@@ -32,7 +32,13 @@ class RiskManager:
         self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 300))
         self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 3))
         self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 10.0))
-        self.pair_weights = self._parse_pair_weights(os.getenv("PAIR_WEIGHTS", ""))
+        self.pair_weights = self._parse_pair_weights(
+            os.getenv(
+                "PAIR_WEIGHTS",
+                "TAO/USD:1.8,FET/USD:1.6,APT/USD:1.5,WIF/USD:1.5,SUI/USD:1.3,PEPE/USD:1.2,"
+                "BONK/USD:1.2,NEAR/USD:1.0,TRUMP/USD:1.4,VIRTUAL/USD:1.4,BNB/USD:0.8,SOL/USD:0.7",
+            )
+        )
         self.last_trade_times: dict[str, float] = {}
         self.peak_portfolio: float = 0.0
         self.current_drawdown: float = 0.0

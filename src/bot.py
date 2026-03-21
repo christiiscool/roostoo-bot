@@ -54,7 +54,20 @@ def _configure_logging() -> logging.Logger:
     logger.propagate = False
     return logger
 
-DEFAULT_PAIRS = ["BTC/USD", "ETH/USD", "BNB/USD", "SOL/USD"]
+DEFAULT_PAIRS = [
+    "TAO/USD",
+    "FET/USD",
+    "APT/USD",
+    "WIF/USD",
+    "SUI/USD",
+    "PEPE/USD",
+    "BONK/USD",
+    "NEAR/USD",
+    "TRUMP/USD",
+    "VIRTUAL/USD",
+    "BNB/USD",
+    "SOL/USD",
+]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = PROJECT_ROOT / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
@@ -69,6 +82,18 @@ class TradingBot:
         self.client = RoostooClient()
         self.client.refresh_exchange_rules()
         self.risk = RiskManager()
+        self.manual_pairs = self._load_manual_pairs()
+        self.available_pairs = self._load_available_pairs()
+        self.screener_enabled = self._is_truthy(os.getenv("SCREENER_ENABLED", "false"))
+        self.screener_max_pairs = int(os.getenv("SCREENER_MAX_PAIRS", 8))
+        self.screener_min_change_pct = float(os.getenv("SCREENER_MIN_CHANGE_PCT", 0.2))
+        self.screener_min_unit_trade_value = float(os.getenv("SCREENER_MIN_UNIT_TRADE_VALUE", 500000.0))
+        self.screener_refresh_ticks = int(os.getenv("SCREENER_REFRESH_TICKS", 1))
+        self.screener_excluded_pairs = {
+            pair.strip()
+            for pair in os.getenv("SCREENER_EXCLUDED_PAIRS", "").split(",")
+            if pair.strip()
+        }
         self.strategies = self._build_strategies()
         self.strategy_weights = {
             "momentum": float(os.getenv("MOMENTUM_WEIGHT", DEFAULT_STRATEGY_WEIGHTS["momentum"])),
@@ -77,21 +102,24 @@ class TradingBot:
             ),
         }
         self.price_history: dict[str, list[float]] = {}
-        self.warmup_price_history()
         self.history_window = 50
-        pairs_raw = os.getenv("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD")
-        self.pairs = [p.strip() for p in pairs_raw.split(",") if p.strip()]
+        self.pairs = self.manual_pairs.copy()
         if not self.pairs:
             self.pairs = DEFAULT_PAIRS.copy()
+        self.warmup_price_history(self.pairs)
         self.pair_weights = self._parse_pair_weights(
-            os.getenv("PAIR_WEIGHTS", "BNB/USD:1.5,BTC/USD:1.0,ETH/USD:0.8,SOL/USD:0.5")
+            os.getenv(
+                "PAIR_WEIGHTS",
+                "TAO/USD:1.8,FET/USD:1.6,APT/USD:1.5,WIF/USD:1.5,SUI/USD:1.3,PEPE/USD:1.2,"
+                "BONK/USD:1.2,NEAR/USD:1.0,TRUMP/USD:1.4,VIRTUAL/USD:1.4,BNB/USD:0.8,SOL/USD:0.7",
+            )
         )
         logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
         logger.info("Loaded pair weights: %s", self.pair_weights)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
-        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.30))
-        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.20))
+        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.15))
+        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.10))
         self.max_active_per_pair = int(os.getenv("MAX_ACTIVE_PER_PAIR", 1))
         self.btc_position_scale = float(os.getenv("BTC_POSITION_SCALE", 0.5))
         self.trades_executed = 0
@@ -124,16 +152,31 @@ class TradingBot:
         self.trade_journal_path.touch(exist_ok=True)
         logger.info("Trade journal path: %s", self.trade_journal_path)
 
-    def warmup_price_history(self) -> None:
+    def warmup_price_history(self, pairs: list[str] | None = None) -> None:
         """Pre-load last 50 candles from Binance public API on startup."""
         binance_map = {
-            "BTC/USD": "BTCUSDT",
-            "ETH/USD": "ETHUSDT",
+            "TAO/USD": "TAOUSDT",
+            "FET/USD": "FETUSDT",
+            "APT/USD": "APTUSDT",
+            "WIF/USD": "WIFUSDT",
+            "SUI/USD": "SUIUSDT",
+            "PEPE/USD": "PEPEUSDT",
+            "BONK/USD": "BONKUSDT",
+            "NEAR/USD": "NEARUSDT",
+            "TRUMP/USD": "TRUMPUSDT",
+            "VIRTUAL/USD": "VIRTUALUSDT",
             "BNB/USD": "BNBUSDT",
             "SOL/USD": "SOLUSDT",
         }
+        target_pairs = pairs or self.pairs
 
-        for pair, symbol in binance_map.items():
+        for pair in target_pairs:
+            if pair in self.price_history and len(self.price_history[pair]) >= self.history_window:
+                continue
+            symbol = binance_map.get(pair)
+            if not symbol:
+                self._warmup_from_roostoo_ticker(pair)
+                continue
             try:
                 response = requests.get(
                     "https://api.binance.com/api/v3/klines",
@@ -141,17 +184,21 @@ class TradingBot:
                     timeout=10,
                 )
                 if response.status_code != 200:
-                    logger.error("HTTP %s: %s", response.status_code, response.text)
+                    logger.warning("[WARMUP] Binance unavailable for %s (%s). Falling back.", pair, symbol)
+                    self._warmup_from_roostoo_ticker(pair)
                     continue
                 candles = response.json()
                 closes = [float(candle[4]) for candle in candles]
                 if closes:
                     self.price_history[pair] = closes[-50:]
-                    print(f"[WARMUP] {pair}: loaded {len(closes)} bars, last price: {closes[-1]}")
+                    logger.info("[WARMUP] %s: loaded %s bars, last price: %.6f", pair, len(closes), closes[-1])
+                else:
+                    self._warmup_from_roostoo_ticker(pair)
             except Exception as exc:
-                print(f"[WARMUP] Failed for {pair}: {exc}")
+                logger.warning("[WARMUP] Failed for %s via Binance: %s", pair, exc)
+                self._warmup_from_roostoo_ticker(pair)
 
-        print("Warmup complete. Price history loaded. Bot ready to trade immediately.")
+        logger.info("Warmup complete. Price history loaded for %s pairs.", len(target_pairs))
 
     def tick(self) -> None:
         """Run one full trading cycle."""
@@ -176,6 +223,8 @@ class TradingBot:
         if not tickers:
             logger.warning("Skipping tick due to incomplete ticker data.")
             return
+
+        self._refresh_screened_pairs(tickers)
 
         wallet = self._current_wallet()
         if not wallet:
@@ -568,6 +617,100 @@ class TradingBot:
             mean_reversion.zscore_exit,
         )
         return [momentum, mean_reversion]
+
+    def _warmup_from_roostoo_ticker(self, pair: str) -> None:
+        seed_prices: list[float] = []
+        for _ in range(3):
+            payload = self.client.get_ticker(pair=pair)
+            tickers = self._extract_tickers(payload or {})
+            ticker_entry = tickers.get(pair)
+            last_price = self._to_float(ticker_entry.get("LastPrice")) if isinstance(ticker_entry, Mapping) else 0.0
+            if last_price > 0:
+                seed_prices.append(last_price)
+            time.sleep(1)
+        if seed_prices:
+            self.price_history[pair] = seed_prices
+            logger.warning("[WARMUP FALLBACK] %s: using Roostoo ticker seed", pair)
+        else:
+            logger.warning("[WARMUP FALLBACK] %s: unable to seed from Roostoo ticker", pair)
+
+    def _load_manual_pairs(self) -> list[str]:
+        pairs_raw = os.getenv("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD")
+        return [pair.strip() for pair in pairs_raw.split(",") if pair.strip()]
+
+    def _load_available_pairs(self) -> list[str]:
+        exchange_info = self.client.get_exchange_info()
+        trade_pairs = {}
+        if isinstance(exchange_info, Mapping):
+            trade_pairs = exchange_info.get("TradePairs", {})
+            if not trade_pairs and isinstance(exchange_info.get("Data"), Mapping):
+                trade_pairs = exchange_info["Data"].get("TradePairs", {})
+        if not isinstance(trade_pairs, Mapping):
+            return self.manual_pairs if hasattr(self, "manual_pairs") else DEFAULT_PAIRS.copy()
+
+        available_pairs = [
+            pair for pair in trade_pairs
+            if isinstance(pair, str) and pair.endswith("/USD")
+        ]
+        return sorted(available_pairs) or DEFAULT_PAIRS.copy()
+
+    def _refresh_screened_pairs(self, tickers: Mapping[str, Any]) -> None:
+        if not self.screener_enabled:
+            return
+        if self.tick_count > 1 and (self.tick_count % self.screener_refresh_ticks) != 0:
+            return
+
+        screened_pairs = self._screen_pairs(tickers)
+        if not screened_pairs:
+            return
+        new_pairs = [pair for pair in screened_pairs if pair not in self.price_history]
+        self.pairs = screened_pairs
+        if new_pairs:
+            self.warmup_price_history(new_pairs)
+        logger.info("Screener selected %s pairs: %s", len(self.pairs), self.pairs)
+
+    def _screen_pairs(self, tickers: Mapping[str, Any]) -> list[str]:
+        candidates: list[tuple[float, str]] = []
+        ranked_pairs: list[tuple[float, str]] = []
+        allowed_pairs = set(self.available_pairs or self.manual_pairs or DEFAULT_PAIRS)
+        for pair, raw_entry in tickers.items():
+            if pair not in allowed_pairs:
+                continue
+            if pair in self.screener_excluded_pairs:
+                continue
+            if not pair.endswith("/USD"):
+                continue
+            if not isinstance(raw_entry, Mapping):
+                continue
+
+            change_pct = self._to_float(raw_entry.get("Change", 0.0)) * 100.0
+            if change_pct < self.screener_min_change_pct:
+                continue
+
+            unit_trade_value = self._to_float(raw_entry.get("UnitTradeValue", 0.0))
+            if unit_trade_value < self.screener_min_unit_trade_value:
+                continue
+
+            max_bid = self._to_float(raw_entry.get("MaxBid", 0.0))
+            min_ask = self._to_float(raw_entry.get("MinAsk", 0.0))
+            last_price = self._to_float(raw_entry.get("LastPrice", 0.0))
+            if max_bid <= 0 or min_ask <= 0 or last_price <= 0:
+                continue
+            spread_pct = ((min_ask - max_bid) / last_price) * 100.0
+            liquidity_bonus = min(unit_trade_value / 1_000_000.0, 20.0) * 0.05
+            score = change_pct - spread_pct + liquidity_bonus
+            ranked_pairs.append((score, pair))
+            if spread_pct > 0.6:
+                continue
+            candidates.append((score, pair))
+
+        if not candidates:
+            ranked_pairs.sort(reverse=True)
+            dynamic_fallback = [pair for _, pair in ranked_pairs[: self.screener_max_pairs]]
+            return dynamic_fallback or self.manual_pairs.copy() or DEFAULT_PAIRS.copy()
+
+        candidates.sort(reverse=True)
+        return [pair for _, pair in candidates[: self.screener_max_pairs]]
 
     def _seed_entry_prices_from_holdings(
         self,

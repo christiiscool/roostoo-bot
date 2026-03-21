@@ -7,8 +7,8 @@ from src.strategy.mean_reversion import MeanReversionStrategy
 from src.strategy.momentum import MomentumStrategy
 
 DEFAULT_STRATEGY_WEIGHTS = {
-    "momentum": 0.25,
-    "mean_reversion": 0.75,
+    "momentum": 0.70,
+    "mean_reversion": 0.30,
 }
 
 

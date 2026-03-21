@@ -33,10 +33,10 @@ def test_momentum_returns_hold_when_trend_strength_is_weak() -> None:
     assert signal == 0
 
 
-def test_aggregate_signals_respects_mean_reversion_dominant_weights() -> None:
+def test_aggregate_signals_respects_momentum_dominant_weights() -> None:
     signals = {"momentum": 1, "mean_reversion": -1}
-    weights = {"momentum": 0.25, "mean_reversion": 0.75}
+    weights = {"momentum": 0.70, "mean_reversion": 0.30}
 
     result = aggregate_signals(signals, weights)
 
-    assert result == -1
+    assert result == 1

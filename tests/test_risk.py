@@ -75,8 +75,8 @@ def test_pair_weights_adjust_position_size() -> None:
 
     assert approved_bnb is True
     assert approved_sol is True
-    assert bnb_qty == 0.6
-    assert sol_qty == 1.0
+    assert bnb_qty == 0.32
+    assert sol_qty == 1.4
 
 
 def test_sell_uses_spot_wallet_coin_balance() -> None:

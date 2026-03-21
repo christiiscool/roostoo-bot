@@ -40,7 +40,8 @@ def build_ticker_payload(prices: dict[str, float]) -> dict[str, Any]:
 def main() -> None:
     load_dotenv()
     os.environ["DRY_RUN"] = "true"
-    os.environ.setdefault("TRADE_PAIRS", "BTC/USD,ETH/USD,BNB/USD,SOL/USD")
+    os.environ["TRADE_PAIRS"] = "BTC/USD,ETH/USD,BNB/USD,SOL/USD"
+    os.environ["SCREENER_ENABLED"] = "false"
 
     bot = TradingBot()
     health = bot.health_check()
