@@ -118,8 +118,10 @@ class TradingBot:
         logger.info("Loaded pair weights: %s", self.pair_weights)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
-        self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.15))
-        self.relaxed_signal_threshold = float(os.getenv("RELAXED_SIGNAL_THRESHOLD", 0.10))
+        self.base_signal_threshold = float(os.getenv("SIGNAL_THRESHOLD", os.getenv("BASE_SIGNAL_THRESHOLD", 0.15)))
+        self.relaxed_signal_threshold = float(
+            os.getenv("RELAXED_SIGNAL_THRESHOLD", os.getenv("SIGNAL_THRESHOLD", 0.10))
+        )
         self.max_active_per_pair = int(os.getenv("MAX_ACTIVE_PER_PAIR", 1))
         self.btc_position_scale = float(os.getenv("BTC_POSITION_SCALE", 0.5))
         self.trades_executed = 0
@@ -391,11 +393,11 @@ class TradingBot:
                             )
                             new_buy_orders += 1
                     if approved and self.dry_run:
-                        self.risk.update_after_trade(pair)
+                        self.risk.update_after_trade(pair, side)
                         self.trades_executed += 1
                         wallet = self._current_wallet()
                     elif approved and not self.dry_run and side == "SELL":
-                        self.risk.update_after_trade(pair)
+                        self.risk.update_after_trade(pair, side)
                         wallet = self._current_wallet()
 
             logger.debug(
@@ -887,7 +889,7 @@ class TradingBot:
                 self._apply_simulated_fill(pair=pair, side="BUY", quantity=quantity, price=limit_price)
                 self.trades_executed += 1
                 self.daily_trade_count += 1
-                self.risk.update_after_trade(pair)
+                self.risk.update_after_trade(pair, "BUY")
                 logger.info(
                     "[DRY RUN] Force buy bootstrap: BUY %.6f %s LIMIT @ %.6f",
                     quantity,
@@ -969,7 +971,7 @@ class TradingBot:
 
         self.trades_executed += 1
         self.daily_trade_count += 1
-        self.risk.update_after_trade(pair)
+        self.risk.update_after_trade(pair, "BUY")
         self._set_exit_targets(pair, price)
         self.last_force_entry_tick = self.tick_count
         self._record_trade_event(
@@ -1038,7 +1040,7 @@ class TradingBot:
             self._apply_simulated_fill(pair=pair, side="SELL", quantity=quantity, price=current_price)
             self.trades_executed += 1
             self.daily_trade_count += 1
-            self.risk.update_after_trade(pair)
+            self.risk.update_after_trade(pair, "SELL")
             self._record_trade_event(
                 pair=pair,
                 side="SELL",
@@ -1069,7 +1071,7 @@ class TradingBot:
         self._clear_exit_targets(pair)
         self.trades_executed += 1
         self.daily_trade_count += 1
-        self.risk.update_after_trade(pair)
+        self.risk.update_after_trade(pair, "SELL")
         self._record_trade_event(
             pair=pair,
             side="SELL",
@@ -1165,7 +1167,7 @@ class TradingBot:
                 self._set_exit_targets(pair, limit_price)
             else:
                 self._clear_exit_targets(pair)
-            self.risk.update_after_trade(pair)
+            self.risk.update_after_trade(pair, side)
             self._record_trade_event(
                 pair=pair,
                 side=side,
@@ -1233,7 +1235,7 @@ class TradingBot:
                 self.daily_trade_count += 1
                 pair = str(metadata["pair"])
                 side = str(metadata["side"]).upper()
-                self.risk.update_after_trade(pair)
+                self.risk.update_after_trade(pair, side)
                 if side == "BUY":
                     self._set_exit_targets(pair, float(metadata["limit_price"]))
                 else:
@@ -1273,7 +1275,7 @@ class TradingBot:
                 if market_response is not None:
                     self.trades_executed += 1
                     self.daily_trade_count += 1
-                    self.risk.update_after_trade(pair)
+                    self.risk.update_after_trade(pair, side.upper())
                     if side == "BUY":
                         self._set_exit_targets(pair, self._to_float(current_prices.get(pair)))
                     else:

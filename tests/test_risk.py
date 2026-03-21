@@ -60,23 +60,26 @@ def test_position_sizing_is_correct_for_buy_and_sell() -> None:
     approved_sell, sell_qty = manager.approve_trade("BTC/USD", -1, sell_wallet, prices)
 
     assert approved_buy is True
-    assert buy_qty == 0.004
+    assert buy_qty == 0.0016
     assert approved_sell is True
     assert sell_qty == 1.6
 
 
-def test_pair_weights_adjust_position_size() -> None:
+def test_position_tiers_adjust_position_size() -> None:
     manager = RiskManager(max_position_pct=0.20)
     wallet = {"USD": {"Free": 1000, "Lock": 0}}
-    prices = {"BNB/USD": 500, "SOL/USD": 100}
+    prices = {"TAO/USD": 500, "SUI/USD": 100, "BNB/USD": 50}
 
+    approved_tao, tao_qty = manager.approve_trade("TAO/USD", 1, wallet, prices)
+    approved_sui, sui_qty = manager.approve_trade("SUI/USD", 1, wallet, prices)
     approved_bnb, bnb_qty = manager.approve_trade("BNB/USD", 1, wallet, prices)
-    approved_sol, sol_qty = manager.approve_trade("SOL/USD", 1, wallet, prices)
 
+    assert approved_tao is True
+    assert approved_sui is True
     assert approved_bnb is True
-    assert approved_sol is True
-    assert bnb_qty == 0.32
-    assert sol_qty == 1.4
+    assert tao_qty == 0.4
+    assert sui_qty == 1.5
+    assert bnb_qty == 1.6
 
 
 def test_sell_uses_spot_wallet_coin_balance() -> None:
@@ -92,7 +95,7 @@ def test_sell_uses_spot_wallet_coin_balance() -> None:
     approved, quantity = manager.approve_trade("ETH/USD", -1, wallet, prices)
 
     assert approved is True
-    assert quantity == 0.8
+    assert quantity == 1.0
 
 
 def test_sell_rejects_when_balance_is_locked_only() -> None:

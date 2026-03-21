@@ -18,6 +18,14 @@ ENV_PATH = PROJECT_ROOT / ".env"
 class RiskManager:
     """Portfolio-level guardrails focused on downside protection."""
 
+    POSITION_TIERS = {
+        "high": 0.20,
+        "medium": 0.15,
+        "low": 0.08,
+    }
+    HIGH_VOL_PAIRS = {"TAO/USD", "APT/USD", "FET/USD", "WIF/USD", "TRUMP/USD"}
+    MEDIUM_VOL_PAIRS = {"SUI/USD", "PEPE/USD", "BONK/USD", "NEAR/USD", "VIRTUAL/USD"}
+
     def __init__(
         self,
         max_position_pct: Optional[float] = None,
@@ -28,17 +36,10 @@ class RiskManager:
     ) -> None:
         load_dotenv(dotenv_path=ENV_PATH)
         self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.20))
-        self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.15))
-        self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 300))
-        self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 3))
-        self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 10.0))
-        self.pair_weights = self._parse_pair_weights(
-            os.getenv(
-                "PAIR_WEIGHTS",
-                "TAO/USD:1.8,FET/USD:1.6,APT/USD:1.5,WIF/USD:1.5,SUI/USD:1.3,PEPE/USD:1.2,"
-                "BONK/USD:1.2,NEAR/USD:1.0,TRUMP/USD:1.4,VIRTUAL/USD:1.4,BNB/USD:0.8,SOL/USD:0.7",
-            )
-        )
+        self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.30))
+        self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 60))
+        self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 5))
+        self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 100.0))
         self.last_trade_times: dict[str, float] = {}
         self.peak_portfolio: float = 0.0
         self.current_drawdown: float = 0.0
@@ -85,7 +86,16 @@ class RiskManager:
             if free_usd <= 0:
                 logger.info("Trade rejected for %s because live USD balance is empty.", pair)
                 return False, 0.0
-            quantity = round((free_usd * self.max_position_pct) / last_price, 6)
+            position_pct = self.get_position_pct(pair)
+            usd_to_spend = free_usd * position_pct
+            logger.info(
+                "Sizing %s: $%.0f (%.0f%% of $%.0f)",
+                pair,
+                usd_to_spend,
+                position_pct * 100.0,
+                free_usd,
+            )
+            quantity = round(usd_to_spend / last_price, 6)
         elif signal == -1:
             coin = pair.split("/")[0]
             coin_free = self._free_balance(normalized_wallet, coin)
@@ -111,8 +121,6 @@ class RiskManager:
         else:
             return False, 0.0
 
-        quantity = round(quantity * self.pair_weights.get(pair, 1.0), 6)
-
         if quantity <= 0 or (quantity * last_price) <= 1.0:
             logger.info(
                 "Trade rejected for %s due to Roostoo mini order gate: quantity=%.6f price=%.6f",
@@ -124,9 +132,13 @@ class RiskManager:
 
         return True, quantity
 
-    def update_after_trade(self, pair: str) -> None:
+    def update_after_trade(self, pair: str, side: str | None = None) -> None:
         """Record the time of a successful trade for cooldown tracking."""
-        self.last_trade_times[pair] = time.time()
+        now = time.time()
+        if side == "SELL":
+            self.last_trade_times[pair] = now - max(self.cooldown_seconds - 30, 0)
+            return
+        self.last_trade_times[pair] = now
 
     def portfolio_value(
         self,
@@ -202,9 +214,17 @@ class RiskManager:
             price = self._resolve_pair_price(pair, current_prices)
             if price is None or price <= 0:
                 continue
-            if (free_balance * price) >= self.min_position_value_usd:
+            coin_value = free_balance * price
+            if coin_value > self.min_position_value_usd:
                 open_positions += 1
         return open_positions
+
+    def get_position_pct(self, pair: str) -> float:
+        if pair in self.HIGH_VOL_PAIRS:
+            return self.POSITION_TIERS["high"]
+        if pair in self.MEDIUM_VOL_PAIRS:
+            return self.POSITION_TIERS["medium"]
+        return self.POSITION_TIERS["low"]
 
     def _free_balance(self, wallet: Mapping[str, Mapping[str, Any]], coin: str) -> float:
         balances = wallet.get(coin, {})
@@ -237,20 +257,6 @@ class RiskManager:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
-
-    def _parse_pair_weights(self, raw_value: str) -> dict[str, float]:
-        weights: dict[str, float] = {}
-        for item in raw_value.split(","):
-            item = item.strip()
-            if not item or ":" not in item:
-                continue
-            pair, value = item.split(":", 1)
-            pair = pair.strip()
-            try:
-                weights[pair] = float(value.strip())
-            except ValueError:
-                logger.warning("Invalid pair weight config for %s: %s", pair, value)
-        return weights
 
 
 __all__ = ["RiskManager", "logger"]
