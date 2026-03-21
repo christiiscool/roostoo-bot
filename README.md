@@ -69,6 +69,13 @@ To analyze recorded fills and review the trade journal:
 python scripts/analyze_trades.py
 ```
 
+To replay the current strategy on recent Binance 1-minute candles:
+
+```bash
+python scripts/backtest.py
+python scripts/backtest.py --sweep
+```
+
 ## Deployment
 
 Deployment automation for AWS EC2 is provided in [scripts/deploy.sh](./scripts/deploy.sh). The script installs dependencies, validates credentials, runs a dry-run smoke test, and starts the bot in a detached `screen` session.
