@@ -17,7 +17,12 @@ from dotenv import load_dotenv
 
 from src.api.client import RoostooClient
 from src.risk.manager import RiskManager
-from src.strategy import MeanReversionStrategy, MomentumStrategy, aggregate_signals
+from src.strategy import (
+    DEFAULT_STRATEGY_WEIGHTS,
+    MeanReversionStrategy,
+    MomentumStrategy,
+    aggregate_signals,
+)
 
 
 def _configure_logging() -> logging.Logger:
@@ -66,8 +71,10 @@ class TradingBot:
         self.risk = RiskManager()
         self.strategies = self._build_strategies()
         self.strategy_weights = {
-            "momentum": float(os.getenv("MOMENTUM_WEIGHT", 0.6)),
-            "mean_reversion": float(os.getenv("MEAN_REVERSION_WEIGHT", 0.4)),
+            "momentum": float(os.getenv("MOMENTUM_WEIGHT", DEFAULT_STRATEGY_WEIGHTS["momentum"])),
+            "mean_reversion": float(
+                os.getenv("MEAN_REVERSION_WEIGHT", DEFAULT_STRATEGY_WEIGHTS["mean_reversion"])
+            ),
         }
         self.price_history: dict[str, list[float]] = {}
         self.warmup_price_history()
@@ -76,7 +83,11 @@ class TradingBot:
         self.pairs = [p.strip() for p in pairs_raw.split(",") if p.strip()]
         if not self.pairs:
             self.pairs = DEFAULT_PAIRS.copy()
+        self.pair_weights = self._parse_pair_weights(
+            os.getenv("PAIR_WEIGHTS", "BNB/USD:1.5,BTC/USD:1.0,ETH/USD:0.8,SOL/USD:0.5")
+        )
         logger.info("Loaded %s pairs: %s", len(self.pairs), self.pairs)
+        logger.info("Loaded pair weights: %s", self.pair_weights)
         self.tick_interval_seconds = int(os.getenv("TICK_INTERVAL_SECONDS", 60))
         self.dry_run = self._is_truthy(os.getenv("DRY_RUN", "true"))
         self.base_signal_threshold = float(os.getenv("BASE_SIGNAL_THRESHOLD", 0.30))
@@ -97,6 +108,8 @@ class TradingBot:
         self.simulated_wallet: dict[str, dict[str, float]] = {}
         self.pending_limit_orders: dict[str, dict[str, Any]] = {}
         self.entry_prices: dict[str, float] = {}
+        self.stop_prices: dict[str, float] = {}
+        self.take_profit_prices: dict[str, float] = {}
         self.portfolio_derisk_drawdown = float(os.getenv("PORTFOLIO_DERISK_DRAWDOWN", 0.0))
         self.consecutive_all_bearish_ticks = 0
         self.force_entry_pct = float(os.getenv("FORCE_ENTRY_PCT", 0.0))
@@ -291,7 +304,15 @@ class TradingBot:
                             if order_response is not None:
                                 self.trades_executed += 1
                                 self.daily_trade_count += 1
-                                self.entry_prices.pop(pair, None)
+                                self._clear_exit_targets(pair)
+                                self._record_trade_event(
+                                    pair=pair,
+                                    side=side,
+                                    quantity=quantity,
+                                    price=last_price,
+                                    order_type="MARKET",
+                                    reason="signal",
+                                )
                                 logger.info(
                                     "ORDER mode=LIVE order_type=MARKET side=%s qty=%.6f pair=%s price=%.6f",
                                     side,
@@ -460,12 +481,12 @@ class TradingBot:
         if side == "BUY":
             usd_wallet["Free"] = max(0.0, usd_wallet["Free"] - notional)
             coin_wallet["Free"] += quantity
-            self.entry_prices[pair] = price
+            self._set_exit_targets(pair, price)
         else:
             coin_wallet["Free"] = max(0.0, coin_wallet["Free"] - quantity)
             usd_wallet["Free"] += notional
             if coin_wallet["Free"] <= 0:
-                self.entry_prices.pop(pair, None)
+                self._clear_exit_targets(pair)
 
         self.latest_wallet = {
             coin: {"Free": balances["Free"], "Lock": balances.get("Lock", 0.0)}
@@ -489,19 +510,49 @@ class TradingBot:
     def _weighted_signal_value(self, signals: Mapping[str, int]) -> float:
         return sum(signal * self.strategy_weights.get(name, 0.0) for name, signal in signals.items())
 
+    def _parse_pair_weights(self, raw_value: str) -> dict[str, float]:
+        weights: dict[str, float] = {}
+        for item in raw_value.split(","):
+            item = item.strip()
+            if not item or ":" not in item:
+                continue
+            pair, value = item.split(":", 1)
+            try:
+                weights[pair.strip()] = float(value.strip())
+            except ValueError:
+                logger.warning("Invalid bot pair weight config for %s: %s", pair, value)
+        return weights
+
+    def _set_exit_targets(self, pair: str, fill_price: float) -> None:
+        self.entry_prices[pair] = fill_price
+        self.stop_prices[pair] = fill_price * 0.992
+        self.take_profit_prices[pair] = fill_price * 1.006
+        logger.info(
+            "ENTRY TARGETS pair=%s entry=%.6f stop=%.6f take_profit=%.6f",
+            pair,
+            fill_price,
+            self.stop_prices[pair],
+            self.take_profit_prices[pair],
+        )
+
+    def _clear_exit_targets(self, pair: str) -> None:
+        self.entry_prices.pop(pair, None)
+        self.stop_prices.pop(pair, None)
+        self.take_profit_prices.pop(pair, None)
+
     def _build_strategies(self) -> list[MomentumStrategy | MeanReversionStrategy]:
         momentum = MomentumStrategy(
             fast_ema=int(os.getenv("MOMENTUM_FAST_EMA", 12)),
             slow_ema=int(os.getenv("MOMENTUM_SLOW_EMA", 26)),
             rsi_period=int(os.getenv("MOMENTUM_RSI_PERIOD", 14)),
-            rsi_overbought=float(os.getenv("MOMENTUM_RSI_OVERBOUGHT", 70)),
-            rsi_oversold=float(os.getenv("MOMENTUM_RSI_OVERSOLD", 30)),
+            rsi_overbought=float(os.getenv("MOMENTUM_RSI_OVERBOUGHT", 65)),
+            rsi_oversold=float(os.getenv("MOMENTUM_RSI_OVERSOLD", 35)),
         )
         mean_reversion = MeanReversionStrategy(
             bb_period=int(os.getenv("MEANREV_BB_PERIOD", 20)),
             bb_std=float(os.getenv("MEANREV_BB_STD", 2.0)),
             zscore_entry=float(os.getenv("MEANREV_ZSCORE_ENTRY", 1.5)),
-            zscore_exit=float(os.getenv("MEANREV_ZSCORE_EXIT", 0.5)),
+            zscore_exit=float(os.getenv("MEANREV_ZSCORE_EXIT", 0.3)),
         )
         logger.info(
             "Strategy config momentum=(fast=%s slow=%s rsi_period=%s overbought=%s oversold=%s) "
@@ -535,7 +586,7 @@ class TradingBot:
             current_price = self._to_float(current_prices.get(pair))
             if current_price <= 0:
                 continue
-            self.entry_prices[pair] = current_price
+            self._set_exit_targets(pair, current_price)
             logger.warning(
                 "Seeded missing entry price for %s from current market price %.6f after restart/recovery.",
                 pair,
@@ -558,11 +609,13 @@ class TradingBot:
             entry_price = self.entry_prices.get(pair, 0.0)
             pnl_pct = ((current_price - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
             logger.info(
-                "HELD pair=%s qty=%.6f entry=%.6f current=%.6f pnl_pct=%.2f",
+                "HELD pair=%s qty=%.6f entry=%.6f current=%.6f stop=%.6f take_profit=%.6f pnl_pct=%.2f",
                 pair,
                 free_balance,
                 entry_price,
                 current_price,
+                self.stop_prices.get(pair, 0.0),
+                self.take_profit_prices.get(pair, 0.0),
                 pnl_pct,
             )
 
@@ -629,20 +682,9 @@ class TradingBot:
             if current_price <= 0 or entry_price <= 0:
                 continue
 
-            pnl_pct = (current_price - entry_price) / entry_price
-            if pnl_pct >= -0.02:
-                continue
-
-            logger.warning(
-                "STOP LOSS triggered: %s entry=%.6f current=%.6f loss=%.2f%%",
-                pair,
-                entry_price,
-                current_price,
-                pnl_pct * 100.0,
-            )
             coin_free = self._wallet_free_balance(wallet, coin)
             if coin_free <= 0:
-                logger.warning("STOP LOSS unable to sell %s: no free balance in wallet.", coin)
+                logger.warning("EXIT target hit for %s but no free balance in wallet.", coin)
                 continue
 
             amount_precision = self.client.amount_precision.get(pair, 6)
@@ -650,18 +692,34 @@ class TradingBot:
             if quantity <= 0:
                 continue
 
-            self._execute_market_sell(
-                pair=pair,
-                quantity=quantity,
-                current_price=current_price,
-                reason="stop_loss",
-            )
+            take_profit_price = self.take_profit_prices.get(pair, float("inf"))
+            stop_price = self.stop_prices.get(pair, 0.0)
+            pnl_pct = (current_price - entry_price) / entry_price
+
+            if current_price >= take_profit_price:
+                logger.info("TAKE PROFIT HIT: %s @ %.6f gain=%.2f%%", pair, current_price, pnl_pct * 100.0)
+                self._execute_market_sell(
+                    pair=pair,
+                    quantity=quantity,
+                    current_price=current_price,
+                    reason="take_profit",
+                )
+            elif current_price <= stop_price:
+                logger.warning("STOP LOSS HIT: %s @ %.6f loss=%.2f%%", pair, current_price, pnl_pct * 100.0)
+                self._execute_market_sell(
+                    pair=pair,
+                    quantity=quantity,
+                    current_price=current_price,
+                    reason="stop_loss",
+                )
 
     def _force_initial_positions(
         self,
         wallet: Mapping[str, Mapping[str, Any]],
         current_prices: Mapping[str, Any],
     ) -> None:
+        if self.force_entry_pct <= 0:
+            return
         if self.tick_count < 3:
             return
         if not self._is_all_cash(wallet):
@@ -769,7 +827,7 @@ class TradingBot:
         self.trades_executed += 1
         self.daily_trade_count += 1
         self.risk.update_after_trade(pair)
-        self.entry_prices[pair] = price
+        self._set_exit_targets(pair, price)
         self.last_force_entry_tick = self.tick_count
         self._record_trade_event(
             pair=pair,
@@ -865,7 +923,7 @@ class TradingBot:
             logger.warning("%s order failed for %s.", reason.upper(), pair)
             return False
 
-        self.entry_prices.pop(pair, None)
+        self._clear_exit_targets(pair)
         self.trades_executed += 1
         self.daily_trade_count += 1
         self.risk.update_after_trade(pair)
@@ -961,9 +1019,9 @@ class TradingBot:
             self.trades_executed += 1
             self.daily_trade_count += 1
             if side == "BUY":
-                self.entry_prices[pair] = limit_price
+                self._set_exit_targets(pair, limit_price)
             else:
-                self.entry_prices.pop(pair, None)
+                self._clear_exit_targets(pair)
             self.risk.update_after_trade(pair)
             self._record_trade_event(
                 pair=pair,
@@ -1034,9 +1092,9 @@ class TradingBot:
                 side = str(metadata["side"]).upper()
                 self.risk.update_after_trade(pair)
                 if side == "BUY":
-                    self.entry_prices[pair] = float(metadata["limit_price"])
+                    self._set_exit_targets(pair, float(metadata["limit_price"]))
                 else:
-                    self.entry_prices.pop(pair, None)
+                    self._clear_exit_targets(pair)
                 self._record_trade_event(
                     pair=pair,
                     side=side,
@@ -1074,9 +1132,9 @@ class TradingBot:
                     self.daily_trade_count += 1
                     self.risk.update_after_trade(pair)
                     if side == "BUY":
-                        self.entry_prices[pair] = self._to_float(current_prices.get(pair))
+                        self._set_exit_targets(pair, self._to_float(current_prices.get(pair)))
                     else:
-                        self.entry_prices.pop(pair, None)
+                        self._clear_exit_targets(pair)
                     self._record_trade_event(
                         pair=pair,
                         side=side.upper(),

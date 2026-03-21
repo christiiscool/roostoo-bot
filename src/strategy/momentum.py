@@ -46,16 +46,24 @@ class MomentumStrategy(BaseStrategy):
             return 0
 
         prices = pd.Series(price_history, dtype="float64")
+        ema_9 = prices.ewm(span=9, adjust=False).mean()
+        ema_21 = prices.ewm(span=21, adjust=False).mean()
         ema_fast = prices.ewm(span=self.fast_ema, adjust=False).mean()
         ema_slow = prices.ewm(span=self.slow_ema, adjust=False).mean()
         ema_50 = prices.ewm(span=50, adjust=False).mean()
         rsi = self._compute_rsi(prices)
 
+        ema_9_value = float(ema_9.iloc[-1])
+        ema_21_value = float(ema_21.iloc[-1])
         fast_value = float(ema_fast.iloc[-1])
         slow_value = float(ema_slow.iloc[-1])
         ema_50_value = float(ema_50.iloc[-1])
         last_price = float(prices.iloc[-1])
         rsi_value = float(rsi.iloc[-1])
+        trend_strength = abs(ema_9_value - ema_21_value) / ema_21_value if ema_21_value else 0.0
+
+        if trend_strength < 0.003:
+            return 0
 
         if (
             fast_value > slow_value

@@ -5,4 +5,5 @@ venv/
 .DS_Store
 *.egg-info
 bot.log
+trade_journal.jsonl
 _tmp*.log

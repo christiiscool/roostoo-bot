@@ -23,15 +23,16 @@ class RiskManager:
         max_position_pct: Optional[float] = None,
         max_drawdown: Optional[float] = None,
         cooldown_seconds: Optional[int] = None,
-        max_open_positions: int = 3,
+        max_open_positions: Optional[int] = None,
         min_position_value_usd: Optional[float] = None,
     ) -> None:
         load_dotenv(dotenv_path=ENV_PATH)
         self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.20))
         self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.15))
         self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 300))
-        self.max_open_positions = int(max_open_positions)
+        self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 3))
         self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 10.0))
+        self.pair_weights = self._parse_pair_weights(os.getenv("PAIR_WEIGHTS", ""))
         self.last_trade_times: dict[str, float] = {}
         self.peak_portfolio: float = 0.0
         self.current_drawdown: float = 0.0
@@ -103,6 +104,8 @@ class RiskManager:
             quantity = round(coin_free * 0.80, 6)
         else:
             return False, 0.0
+
+        quantity = round(quantity * self.pair_weights.get(pair, 1.0), 6)
 
         if quantity <= 0 or (quantity * last_price) <= 1.0:
             logger.info(
@@ -228,6 +231,20 @@ class RiskManager:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _parse_pair_weights(self, raw_value: str) -> dict[str, float]:
+        weights: dict[str, float] = {}
+        for item in raw_value.split(","):
+            item = item.strip()
+            if not item or ":" not in item:
+                continue
+            pair, value = item.split(":", 1)
+            pair = pair.strip()
+            try:
+                weights[pair] = float(value.strip())
+            except ValueError:
+                logger.warning("Invalid pair weight config for %s: %s", pair, value)
+        return weights
 
 
 __all__ = ["RiskManager", "logger"]

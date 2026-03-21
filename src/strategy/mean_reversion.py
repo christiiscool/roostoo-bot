@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from src.strategy.base import BaseStrategy
@@ -15,8 +14,8 @@ class MeanReversionStrategy(BaseStrategy):
         self,
         bb_period: int = 20,
         bb_std: float = 2.0,
-        zscore_entry: float = 1.8,
-        zscore_exit: float = 0.5,
+        zscore_entry: float = 1.5,
+        zscore_exit: float = 0.3,
     ) -> None:
         self.bb_period = bb_period
         self.bb_std = bb_std
@@ -37,21 +36,41 @@ class MeanReversionStrategy(BaseStrategy):
         prices = pd.Series(price_history, dtype="float64")
         rolling_mean = prices.rolling(window=self.bb_period).mean()
         rolling_std = prices.rolling(window=self.bb_period).std(ddof=0)
+        rolling_min = prices.rolling(window=self.bb_period).min()
+        rolling_max = prices.rolling(window=self.bb_period).max()
         upper_band = rolling_mean + (self.bb_std * rolling_std)
         lower_band = rolling_mean - (self.bb_std * rolling_std)
 
         mean_value = rolling_mean.iloc[-1]
         std_value = rolling_std.iloc[-1]
         last_price = prices.iloc[-1]
+        range_min = rolling_min.iloc[-1]
+        range_max = rolling_max.iloc[-1]
 
-        if pd.isna(mean_value) or pd.isna(std_value) or std_value == 0:
+        if (
+            pd.isna(mean_value)
+            or pd.isna(std_value)
+            or std_value == 0
+            or pd.isna(range_min)
+            or pd.isna(range_max)
+        ):
             return 0
 
         z_score = float((last_price - mean_value) / std_value)
+        lower_range_bound = float(range_min + 0.30 * (range_max - range_min))
+        upper_range_bound = float(range_min + 0.70 * (range_max - range_min))
 
-        if z_score < -self.zscore_entry and last_price <= lower_band.iloc[-1]:
-            return 0.8
-        if z_score > self.zscore_entry and last_price >= upper_band.iloc[-1]:
+        if (
+            z_score < -self.zscore_entry
+            and last_price <= lower_band.iloc[-1]
+            and last_price <= lower_range_bound
+        ):
+            return 1
+        if (
+            z_score > self.zscore_entry
+            and last_price >= upper_band.iloc[-1]
+            and last_price >= upper_range_bound
+        ):
             return -1
         if abs(z_score) < self.zscore_exit:
             return 0

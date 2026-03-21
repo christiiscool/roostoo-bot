@@ -6,6 +6,11 @@ from src.strategy.base import BaseStrategy
 from src.strategy.mean_reversion import MeanReversionStrategy
 from src.strategy.momentum import MomentumStrategy
 
+DEFAULT_STRATEGY_WEIGHTS = {
+    "momentum": 0.25,
+    "mean_reversion": 0.75,
+}
+
 
 def aggregate_signals(
     signals: dict[str, float],
@@ -25,5 +30,6 @@ __all__ = [
     "BaseStrategy",
     "MomentumStrategy",
     "MeanReversionStrategy",
+    "DEFAULT_STRATEGY_WEIGHTS",
     "aggregate_signals",
 ]

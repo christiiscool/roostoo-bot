@@ -21,13 +21,22 @@ def test_mean_reversion_returns_buy_when_price_is_far_below_mean() -> None:
 
     signal = strategy.compute_signal(prices)
 
-    assert signal == 0.8
+    assert signal == 1
 
 
-def test_aggregate_signals_holds_on_weak_conflict() -> None:
+def test_momentum_returns_hold_when_trend_strength_is_weak() -> None:
+    strategy = MomentumStrategy(rsi_overbought=101)
+    prices = [100.0 + ((index % 2) * 0.05) for index in range(strategy.required_bars() + 10)]
+
+    signal = strategy.compute_signal(prices)
+
+    assert signal == 0
+
+
+def test_aggregate_signals_respects_mean_reversion_dominant_weights() -> None:
     signals = {"momentum": 1, "mean_reversion": -1}
-    weights = {"momentum": 0.6, "mean_reversion": 0.4}
+    weights = {"momentum": 0.25, "mean_reversion": 0.75}
 
     result = aggregate_signals(signals, weights)
 
-    assert result == 0
+    assert result == -1
