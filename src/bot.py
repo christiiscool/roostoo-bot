@@ -60,13 +60,7 @@ DEFAULT_PAIRS = [
     "APT/USD",
     "WIF/USD",
     "SUI/USD",
-    "PEPE/USD",
-    "BONK/USD",
-    "NEAR/USD",
-    "TRUMP/USD",
-    "VIRTUAL/USD",
     "BNB/USD",
-    "SOL/USD",
 ]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -598,6 +592,7 @@ class TradingBot:
             rsi_period=int(os.getenv("MOMENTUM_RSI_PERIOD", 14)),
             rsi_overbought=float(os.getenv("MOMENTUM_RSI_OVERBOUGHT", 65)),
             rsi_oversold=float(os.getenv("MOMENTUM_RSI_OVERSOLD", 35)),
+            min_trend_strength=float(os.getenv("MOMENTUM_MIN_TREND_STRENGTH", 0.005)),
         )
         mean_reversion = MeanReversionStrategy(
             bb_period=int(os.getenv("MEANREV_BB_PERIOD", 20)),

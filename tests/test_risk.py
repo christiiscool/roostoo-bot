@@ -60,7 +60,7 @@ def test_position_sizing_is_correct_for_buy_and_sell() -> None:
     approved_sell, sell_qty = manager.approve_trade("BTC/USD", -1, sell_wallet, prices)
 
     assert approved_buy is True
-    assert buy_qty == 0.0016
+    assert buy_qty == 0.0012
     assert approved_sell is True
     assert sell_qty == 1.6
 
@@ -77,9 +77,9 @@ def test_position_tiers_adjust_position_size() -> None:
     assert approved_tao is True
     assert approved_sui is True
     assert approved_bnb is True
-    assert tao_qty == 0.4
-    assert sui_qty == 1.5
-    assert bnb_qty == 1.6
+    assert tao_qty == 0.24
+    assert sui_qty == 1.0
+    assert bnb_qty == 1.2
 
 
 def test_sell_uses_spot_wallet_coin_balance() -> None:

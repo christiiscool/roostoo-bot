@@ -19,9 +19,9 @@ class RiskManager:
     """Portfolio-level guardrails focused on downside protection."""
 
     POSITION_TIERS = {
-        "high": 0.20,
-        "medium": 0.15,
-        "low": 0.08,
+        "high": 0.12,
+        "medium": 0.10,
+        "low": 0.06,
     }
     HIGH_VOL_PAIRS = {"TAO/USD", "APT/USD", "FET/USD", "WIF/USD", "TRUMP/USD"}
     MEDIUM_VOL_PAIRS = {"SUI/USD", "PEPE/USD", "BONK/USD", "NEAR/USD", "VIRTUAL/USD"}
@@ -35,10 +35,10 @@ class RiskManager:
         min_position_value_usd: Optional[float] = None,
     ) -> None:
         load_dotenv(dotenv_path=ENV_PATH)
-        self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.20))
-        self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.30))
-        self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 60))
-        self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 5))
+        self.max_position_pct = float(max_position_pct or os.getenv("MAX_POSITION_PCT", 0.12))
+        self.max_drawdown = float(max_drawdown or os.getenv("MAX_DRAWDOWN", 0.20))
+        self.cooldown_seconds = int(cooldown_seconds or os.getenv("COOLDOWN_SECONDS", 180))
+        self.max_open_positions = int(max_open_positions or os.getenv("MAX_OPEN_POSITIONS", 3))
         self.min_position_value_usd = float(min_position_value_usd or os.getenv("MIN_POSITION_VALUE_USD", 100.0))
         self.last_trade_times: dict[str, float] = {}
         self.peak_portfolio: float = 0.0

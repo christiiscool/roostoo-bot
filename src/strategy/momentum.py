@@ -17,12 +17,14 @@ class MomentumStrategy(BaseStrategy):
         rsi_period: int = 14,
         rsi_overbought: float = 65,
         rsi_oversold: float = 35,
+        min_trend_strength: float = 0.005,
     ) -> None:
         self.fast_ema = fast_ema
         self.slow_ema = slow_ema
         self.rsi_period = rsi_period
         self.rsi_overbought = rsi_overbought
         self.rsi_oversold = rsi_oversold
+        self.min_trend_strength = min_trend_strength
 
     @property
     def name(self) -> str:
@@ -62,7 +64,7 @@ class MomentumStrategy(BaseStrategy):
         rsi_value = float(rsi.iloc[-1])
         trend_strength = abs(ema_9_value - ema_21_value) / ema_21_value if ema_21_value else 0.0
 
-        if trend_strength < 0.003:
+        if trend_strength < self.min_trend_strength:
             return 0
 
         if (
